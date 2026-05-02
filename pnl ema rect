@@ -115,6 +115,10 @@ string GV_SET        = _Symbol + "_CMB_SET";
 string GV_VIS_PREFIX = _Symbol + "_MA_Vis_";
 bool   g_wasManuallyDragged = false;
 
+// Color Memory Globals
+string GV_COLOR      = _Symbol + "_ZoneColor";
+color  g_currentZoneColor = clrGold;
+
 //==================================================================
 // ── COMBINED HEADER OBJECT NAMES ──────────────────────────────────
 //==================================================================
@@ -471,7 +475,7 @@ void CalcBar(int &lW,int &rW,int &ddFx,int &tgFx)
    double tot=InpMaxDD+InpOverallTarget;
    lW  =(int)MathRound(BAR_W*InpMaxDD/tot);
    rW  =BAR_W-lW;
-   ddFx=InpMaxDD>0            ?(int)MathMin(ddu/InpMaxDD*lW,            (double)lW):0;
+   ddFx=InpMaxDD>0            ?(int)MathMin(ddu/InpMaxDD*lW,             (double)lW):0;
    tgFx=(InpOverallTarget>0&&ovn>0)?(int)MathMin(ovn/InpOverallTarget*rW,(double)rW):0;
 }
 
@@ -720,6 +724,11 @@ int OnInit()
    // Remember the current dropdown setting for next time
    GlobalVariableSet(GV_SET, (int)InpDefaultPos);
 
+   // RESTORE SAVED COLOR
+   if(GlobalVariableCheck(GV_COLOR)) {
+       g_currentZoneColor = (color)GlobalVariableGet(GV_COLOR);
+   }
+
    // MA setup — restore visibility
    ma_periods[0]=MA1_Period; ma_colors[0]=MA1_Color; ma_widths[0]=MA1_Width; ma_visible[0]=true;
    ma_periods[1]=MA2_Period; ma_colors[1]=MA2_Color; ma_widths[1]=MA2_Width; ma_visible[1]=true;
@@ -817,6 +826,16 @@ void OnTimer()
 void OnChartEvent(const int id,const long &lp,const double &dp,const string &sp)
 {
    int x=(int)lp, y=(int)dp;
+
+   // ── COLOR MEMORY: Save color if user changes properties of zone ──
+   if(id == CHARTEVENT_OBJECT_CHANGE)
+   {
+      if(StringFind(sp, "ZoneRect_") == 0)
+      {
+         g_currentZoneColor = (color)ObjectGetInteger(0, sp, OBJPROP_COLOR);
+         GlobalVariableSet(GV_COLOR, (double)g_currentZoneColor);
+      }
+   }
 
    //----------------------------------------------------------------
    // ESC — cancel rectangle drawing
@@ -1008,7 +1027,7 @@ void OnChartEvent(const int id,const long &lp,const double &dp,const string &sp)
             datetime futureTime = TimeCurrent() + 86400 * 365 * 10; 
             
             ObjectCreate(0,currentObjName,OBJ_RECTANGLE,0,startTime,startPrice,futureTime,startPrice);
-            ObjectSetInteger(0,currentObjName,OBJPROP_COLOR,      clrGold); 
+            ObjectSetInteger(0,currentObjName,OBJPROP_COLOR,      g_currentZoneColor); 
             ObjectSetInteger(0,currentObjName,OBJPROP_FILL,       true);   
             ObjectSetInteger(0,currentObjName,OBJPROP_BACK,       true);
             ObjectSetInteger(0,currentObjName,OBJPROP_SELECTABLE, true);
