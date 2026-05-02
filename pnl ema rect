@@ -1,0 +1,1044 @@
+//+------------------------------------------------------------------+
+//|                        Combined_PnL_MA.mq5                       |
+//|  DailyPnL v12 + MA/Rectangle Tool — Combined Single Header       |
+//|  Header LEFT  (= EQ area)  → click to toggle Daily PnL panel     |
+//|  Header RIGHT (MA ▼)       → click to toggle MA rows             |
+//|  MA Panel Header (⬛)      → click to toggle Rectangle tool      |
+//+------------------------------------------------------------------+
+#property copyright "Combined v1.0"
+#property version   "1.00"
+#property indicator_chart_window
+#property indicator_plots 0
+
+//==================================================================
+// ── DAILY PNL INPUTS ──────────────────────────────────────────────
+//==================================================================
+enum ENUM_DEFAULT_POS
+{
+   POS_LOWER_RIGHT = 1,
+   POS_LOWER_LEFT  = 2,
+   POS_UPPER_RIGHT = 3,
+   POS_UPPER_LEFT  = 4
+};
+input ENUM_DEFAULT_POS InpDefaultPos    = POS_LOWER_RIGHT; // Default Snap Position
+input bool   InpExpandUp                = true;
+input int    InpEqFontSize              = 17;
+input int    InpResetHour_UTC           = 21;
+input int    InpResetMin_UTC            = 0;
+input double InpStartingBalance         = 10000.0;
+input double InpOverallTarget           = 800.0;
+input double InpMaxDD                   = 1000.0;
+input double InpDailyDD                 = 389.44;
+input string InpCurrency                = "$";
+input color  InpBgColor                 = clrWhite;
+input color  InpBorderColor             = C'160,175,215';
+input color  InpHdrBg                   = C'25,38,105';
+input color  InpHdrText                 = clrWhite;
+input color  InpProfitColor             = C'0,150,60';
+input color  InpLossColor               = clrRed;
+input color  InpNetPosColor             = C'32,178,120';
+input color  InpNetNegColor             = clrRed;
+input color  InpTextColor               = C'30,30,70';
+input color  InpSepColor                = C'195,205,230';
+
+//==================================================================
+// ── MA INPUTS ─────────────────────────────────────────────────────
+//==================================================================
+input bool   InpMAExpandUp = true;             // Expand MA Panel Upward?
+input int    MA1_Period = 8;    input color MA1_Color = clrDodgerBlue; input int MA1_Width = 1;
+input int    MA2_Period = 21;   input color MA2_Color = clrDodgerBlue; input int MA2_Width = 2;
+input int    MA3_Period = 50;   input color MA3_Color = clrDodgerBlue; input int MA3_Width = 2;
+input int    MA4_Period = 200;  input color MA4_Color = clrRed;        input int MA4_Width = 4;
+
+//==================================================================
+// ── LAYOUT CONSTANTS ──────────────────────────────────────────────
+//==================================================================
+// Daily PnL panel dimensions
+#define PW          195
+#define HDR_H        30
+#define CONTENT_H   103
+#define PH_FULL     133
+#define PH_MINI      30
+#define BAR_X         6
+#define BAR_W       183
+#define BAR_H        12
+
+// MA panel dimensions
+#define MA_COUNT      4
+#define MA_PANEL_W  190
+#define MA_ROW_H     28
+#define MA_HDR_H     28
+
+//==================================================================
+// ── DAILY PNL GLOBALS ─────────────────────────────────────────────
+//==================================================================
+string   g_pfx            = "DPL_";
+bool     g_col            = true;    // Daily PnL rows collapsed
+int      g_ox             = 0;
+int      g_oy             = 0;
+bool     g_drag           = false;
+int      g_dDX            = 0, g_dDY = 0;
+double   g_dayStartBal    = 0;
+datetime g_lastDay        = 0;
+bool     g_rebuild        = true;
+bool     g_autoPositioned = false;
+bool     g_mouseOnHdr     = false;
+int      g_clickX         = 0, g_clickY = 0;
+
+//==================================================================
+// ── MA / RECTANGLE GLOBALS ────────────────────────────────────────
+//==================================================================
+// Rectangle Tool
+bool     isDrawing      = false;
+int      clickStep      = 0;
+string   currentObjName = "";
+uint     lastClickTime  = 0;
+int      startX = 0, startY = 0;
+double   startPrice = 0;
+datetime startTime  = 0;
+
+// MA panel state
+bool   ma_panelExpanded   = false;   // MA rows visible
+
+// MA data
+int    ma_handles[MA_COUNT];
+int    ma_periods[MA_COUNT];
+color  ma_colors[MA_COUNT];
+int    ma_widths[MA_COUNT];
+bool   ma_visible[MA_COUNT];
+string ma_linePrefix = "MA_Line_";
+
+// Global Variable keys
+string GV_X          = _Symbol + "_CMB_X";
+string GV_Y          = _Symbol + "_CMB_Y";
+string GV_SET        = _Symbol + "_CMB_SET";
+string GV_VIS_PREFIX = _Symbol + "_MA_Vis_";
+bool   g_wasManuallyDragged = false;
+
+//==================================================================
+// ── COMBINED HEADER OBJECT NAMES ──────────────────────────────────
+//==================================================================
+string HDR_BG_NAME   = "DPL_HD";      // full header background (reused from PnL)
+string HDR_EQ_LABEL  = "DPL_TT";      // "= EQ" text
+string HDR_EQ_VALUE  = "DPL_EQ";      // equity value
+string HDR_MA_BTN    = "CMB_MABtn";   // MA toggle button on right of main header
+string HDR_RECT_BTN  = "CMB_RectBtn"; // ⬛ button inside the MA Panel Header
+
+// MA panel objects
+string MA_PANEL_BG   = "MA_PanelBG";
+string MA_PANEL_HDR  = "MA_PanelHDR"; 
+string MA_LABEL_TEXT = "MA_LabelText";
+
+// Colors for MA panel
+color CLR_PANEL_BG   = C'240,242,245';
+color CLR_HEADER_BG  = C'220,224,230';
+color CLR_BORDER     = C'180,185,195';
+color CLR_TEXT_DARK  = C'30,30,40';
+color CLR_TEXT_SUB   = C'110,115,130';
+color CLR_BTN_BG     = C'200,205,215';
+color CLR_BTN_ACTIVE = clrCrimson;
+
+//==================================================================
+// ── GEOMETRY HELPERS ──────────────────────────────────────────────
+//==================================================================
+int HdrY()            { return g_oy; }
+int ContentY(int r=0) { return (InpExpandUp ? g_oy - CONTENT_H : g_oy + HDR_H) + r; }
+
+// Bounds of the PnL Panel
+int PnlTopY() { return (InpExpandUp && !g_col) ? g_oy - CONTENT_H : g_oy; }
+int PnlBotY() { return (!InpExpandUp && !g_col) ? g_oy + HDR_H + CONTENT_H : g_oy + HDR_H; }
+
+// MA rows dynamic positioning
+int MA_TotalH() { return MA_HDR_H + MA_COUNT * MA_ROW_H; }
+int MA_RowsY()  { return InpMAExpandUp ? PnlTopY() - MA_TotalH() : PnlBotY(); }
+
+//==================================================================
+// ── OBJECT HELPERS (PnL style) ────────────────────────────────────
+//==================================================================
+void R(string n,int ax,int ay,int w,int h,color bg,color brd,int bw)
+{
+   if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_RECTANGLE_LABEL,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,       CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,    ax);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,    ay);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,        w);
+   ObjectSetInteger(0,n,OBJPROP_YSIZE,        h);
+   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,      bg);
+   ObjectSetInteger(0,n,OBJPROP_BORDER_COLOR, brd);
+   ObjectSetInteger(0,n,OBJPROP_BORDER_TYPE,  BORDER_FLAT);
+   ObjectSetInteger(0,n,OBJPROP_WIDTH,        bw);
+   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,   false);
+   ObjectSetInteger(0,n,OBJPROP_BACK,         false);
+   ObjectSetInteger(0,n,OBJPROP_ZORDER,       0);
+}
+void L(string n,int ax,int ay,string txt,color clr,int fs,
+       ENUM_ANCHOR_POINT anch=ANCHOR_LEFT_UPPER)
+{
+   if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_LABEL,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,    CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE, ax);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE, ay);
+   ObjectSetString (0,n,OBJPROP_TEXT,      txt);
+   ObjectSetInteger(0,n,OBJPROP_COLOR,     clr);
+   ObjectSetString (0,n,OBJPROP_FONT,      "Consolas");
+   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,  fs);
+   ObjectSetInteger(0,n,OBJPROP_ANCHOR,    anch);
+   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_BACK,      false);
+   ObjectSetInteger(0,n,OBJPROP_ZORDER,    1);
+}
+void B(string n,int ax,int ay,int w,int h,string txt,color bg,color fg,int fs)
+{
+   if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_BUTTON,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,    CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE, ax);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE, ay);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,     w);
+   ObjectSetInteger(0,n,OBJPROP_YSIZE,     h);
+   ObjectSetString (0,n,OBJPROP_TEXT,      txt);
+   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,   bg);
+   ObjectSetInteger(0,n,OBJPROP_COLOR,     fg);
+   ObjectSetString (0,n,OBJPROP_FONT,      "Consolas");
+   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,  fs);
+   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,true);
+   ObjectSetInteger(0,n,OBJPROP_STATE,     false);
+   ObjectSetInteger(0,n,OBJPROP_BACK,      false);
+   ObjectSetInteger(0,n,OBJPROP_ZORDER,    2);
+}
+
+// MA-style helpers
+void MakeRectLabel(string name,int x,int y,int w,int h,color bg,color border,int z)
+{
+   if(ObjectFind(0,name)<0) ObjectCreate(0,name,OBJ_RECTANGLE_LABEL,0,0,0);
+   ObjectSetInteger(0,name,OBJPROP_CORNER,     CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,name,OBJPROP_XDISTANCE,  x);
+   ObjectSetInteger(0,name,OBJPROP_YDISTANCE,  y);
+   ObjectSetInteger(0,name,OBJPROP_XSIZE,      w);
+   ObjectSetInteger(0,name,OBJPROP_YSIZE,      h);
+   ObjectSetInteger(0,name,OBJPROP_BGCOLOR,    bg);
+   ObjectSetInteger(0,name,OBJPROP_BORDER_TYPE,BORDER_FLAT);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,      border);
+   ObjectSetInteger(0,name,OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0,name,OBJPROP_HIDDEN,     true);
+   ObjectSetInteger(0,name,OBJPROP_BACK,       false);
+   ObjectSetInteger(0,name,OBJPROP_ZORDER,     z);
+}
+void MakeLabel(string name,int x,int y,string txt,color fg,int fs,int z)
+{
+   if(ObjectFind(0,name)<0) ObjectCreate(0,name,OBJ_LABEL,0,0,0);
+   ObjectSetInteger(0,name,OBJPROP_CORNER,    CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,name,OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0,name,OBJPROP_YDISTANCE, y);
+   ObjectSetString (0,name,OBJPROP_TEXT,      txt);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,     fg);
+   ObjectSetInteger(0,name,OBJPROP_FONTSIZE,  fs);
+   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,name,OBJPROP_HIDDEN,    true);
+   ObjectSetInteger(0,name,OBJPROP_BACK,      false);
+   ObjectSetInteger(0,name,OBJPROP_ZORDER,    z);
+}
+void MakeButton(string name,int x,int y,int w,int h,string txt,color bg,color fg,int fs,int z)
+{
+   if(ObjectFind(0,name)<0) ObjectCreate(0,name,OBJ_BUTTON,0,0,0);
+   ObjectSetInteger(0,name,OBJPROP_CORNER,    CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,name,OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0,name,OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0,name,OBJPROP_XSIZE,     w);
+   ObjectSetInteger(0,name,OBJPROP_YSIZE,     h);
+   ObjectSetString (0,name,OBJPROP_TEXT,      txt);
+   ObjectSetInteger(0,name,OBJPROP_BGCOLOR,   bg);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,     fg);
+   ObjectSetInteger(0,name,OBJPROP_FONTSIZE,  fs);
+   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,name,OBJPROP_STATE,     false);
+   ObjectSetInteger(0,name,OBJPROP_HIDDEN,    true);
+   ObjectSetInteger(0,name,OBJPROP_BACK,      false);
+   ObjectSetInteger(0,name,OBJPROP_ZORDER,    z);
+}
+void ObjMove(string name,int x,int y)
+{
+   if(ObjectFind(0,name)<0) return;
+   ObjectSetInteger(0,name,OBJPROP_XDISTANCE,x);
+   ObjectSetInteger(0,name,OBJPROP_YDISTANCE,y);
+}
+
+//==================================================================
+// ── BUILD / DESTROY MA ROWS ───────────────────────────────────────
+//==================================================================
+void BuildMaRows()
+{
+   int px=g_ox;
+   int py=MA_RowsY();
+   int totalH=MA_HDR_H+MA_COUNT*MA_ROW_H;
+   
+   MakeRectLabel(MA_PANEL_BG, px,py,MA_PANEL_W,totalH,CLR_PANEL_BG,CLR_BORDER,90);
+   MakeRectLabel(MA_PANEL_HDR,px,py,MA_PANEL_W,MA_HDR_H,CLR_HEADER_BG,CLR_BORDER,95);
+   MakeLabel(MA_LABEL_TEXT, px+10,py+7,"≡ MA",CLR_TEXT_DARK,9,101);
+
+   // Place Rectangle Tool button perfectly in line with MA header text
+   MakeButton(HDR_RECT_BTN, px+MA_PANEL_W-28, py+4, 20, 20, isDrawing?"⬛":"⬛", 
+              isDrawing?CLR_BTN_ACTIVE:CLR_HEADER_BG, isDrawing?clrWhite:CLR_TEXT_DARK, 9, 102);
+   ObjectSetInteger(0,HDR_RECT_BTN,OBJPROP_SELECTABLE,true);
+
+   for(int i=0;i<MA_COUNT;i++)
+   {
+      int ry=py+MA_HDR_H+i*MA_ROW_H;
+      MakeRectLabel("MA_Sep_"+IntegerToString(i),px,ry,MA_PANEL_W,1,CLR_BORDER,CLR_BORDER,96);
+      MakeRectLabel("MA_Dot_"+IntegerToString(i),px+7,ry+10,8,8,ma_colors[i],ma_colors[i],101);
+      MakeLabel("MA_Lbl_"+IntegerToString(i),px+20,ry+5,
+                "EMA "+IntegerToString(ma_periods[i]),CLR_TEXT_DARK,9,101);
+      MakeLabel("MA_Sub_"+IntegerToString(i),px+20,ry+16,
+                "P:"+IntegerToString(ma_periods[i])+"  W:"+IntegerToString(ma_widths[i]),
+                CLR_TEXT_SUB,7,101);
+      MakeButton("MA_Eye_"+IntegerToString(i),px+MA_PANEL_W-28,ry+4,20,20,
+                 ma_visible[i]?"👁":"◌",CLR_BTN_BG,CLR_TEXT_DARK,9,102);
+      ObjectSetInteger(0,"MA_Eye_"+IntegerToString(i),OBJPROP_SELECTABLE,true);
+   }
+}
+
+void DestroyMaRows()
+{
+   ObjectDelete(0,MA_PANEL_BG);
+   ObjectDelete(0,MA_PANEL_HDR);
+   ObjectDelete(0,MA_LABEL_TEXT);
+   ObjectDelete(0,HDR_RECT_BTN); 
+   for(int i=0;i<MA_COUNT;i++)
+   {
+      ObjectDelete(0,"MA_Sep_"+IntegerToString(i));
+      ObjectDelete(0,"MA_Dot_"+IntegerToString(i));
+      ObjectDelete(0,"MA_Lbl_"+IntegerToString(i));
+      ObjectDelete(0,"MA_Sub_"+IntegerToString(i));
+      ObjectDelete(0,"MA_Eye_"+IntegerToString(i));
+   }
+}
+
+void RepositionMaRows()
+{
+   int px=g_ox;
+   int py=MA_RowsY();
+   ObjMove(MA_PANEL_BG, px, py);
+   ObjMove(MA_PANEL_HDR,px, py);
+   ObjMove(MA_LABEL_TEXT,px+10,py+7);
+   ObjMove(HDR_RECT_BTN, px+MA_PANEL_W-28, py+4); 
+   
+   for(int i=0;i<MA_COUNT;i++)
+   {
+      int ry=py+MA_HDR_H+i*MA_ROW_H;
+      ObjMove("MA_Sep_"+IntegerToString(i),px,ry);
+      ObjMove("MA_Dot_"+IntegerToString(i),px+7,ry+10);
+      ObjMove("MA_Lbl_"+IntegerToString(i),px+20,ry+5);
+      ObjMove("MA_Sub_"+IntegerToString(i),px+20,ry+16);
+      ObjMove("MA_Eye_"+IntegerToString(i),px+MA_PANEL_W-28,ry+4);
+   }
+}
+
+//==================================================================
+// ── REPOSITION — moves every object (zero blink on scroll/zoom) ──
+//==================================================================
+void Reposition()
+{
+   int hY  = HdrY();
+   int cY  = ContentY();
+   
+   // Combine outer background boundaries
+   int topY = PnlTopY();
+   int botY = PnlBotY();
+   if(ma_panelExpanded) {
+      topY = (int)MathMin(topY, MA_RowsY());
+      botY = (int)MathMax(botY, MA_RowsY() + MA_TotalH());
+   }
+   int combinedH = botY - topY;
+
+   ObjectSetInteger(0,g_pfx+"BG",  OBJPROP_XDISTANCE, g_ox);
+   ObjectSetInteger(0,g_pfx+"BG",  OBJPROP_YDISTANCE, topY);
+   ObjectSetInteger(0,g_pfx+"BG",  OBJPROP_XSIZE,     PW);
+   ObjectSetInteger(0,g_pfx+"BG",  OBJPROP_YSIZE,     combinedH);
+   
+   ObjectSetInteger(0,g_pfx+"HD",  OBJPROP_XDISTANCE, g_ox);
+   ObjectSetInteger(0,g_pfx+"HD",  OBJPROP_YDISTANCE, hY);
+   ObjectSetInteger(0,g_pfx+"TT",  OBJPROP_XDISTANCE, g_ox+8);
+   ObjectSetInteger(0,g_pfx+"TT",  OBJPROP_YDISTANCE, hY+8);
+   ObjectSetInteger(0,g_pfx+"EQ",  OBJPROP_XDISTANCE, g_ox+50);
+   ObjectSetInteger(0,g_pfx+"EQ",  OBJPROP_YDISTANCE, hY+5);
+
+   // MA Toggle button on right side of main header
+   ObjectSetInteger(0,HDR_MA_BTN,  OBJPROP_XDISTANCE, g_ox+PW-34);
+   ObjectSetInteger(0,HDR_MA_BTN,  OBJPROP_YDISTANCE, hY+7);
+
+   // PnL content rows
+   if(!g_col)
+   {
+      ObjectSetInteger(0,g_pfx+"PL",  OBJPROP_XDISTANCE, g_ox+8);
+      ObjectSetInteger(0,g_pfx+"PL",  OBJPROP_YDISTANCE, cY+4);
+      ObjectSetInteger(0,g_pfx+"PV",  OBJPROP_XDISTANCE, g_ox+PW-6);
+      ObjectSetInteger(0,g_pfx+"PV",  OBJPROP_YDISTANCE, cY+2);
+      ObjectSetInteger(0,g_pfx+"S1",  OBJPROP_XDISTANCE, g_ox);
+      ObjectSetInteger(0,g_pfx+"S1",  OBJPROP_YDISTANCE, cY+17);
+      ObjectSetInteger(0,g_pfx+"LL",  OBJPROP_XDISTANCE, g_ox+8);
+      ObjectSetInteger(0,g_pfx+"LL",  OBJPROP_YDISTANCE, cY+22);
+      ObjectSetInteger(0,g_pfx+"LV",  OBJPROP_XDISTANCE, g_ox+PW-6);
+      ObjectSetInteger(0,g_pfx+"LV",  OBJPROP_YDISTANCE, cY+20);
+      ObjectSetInteger(0,g_pfx+"S2",  OBJPROP_XDISTANCE, g_ox);
+      ObjectSetInteger(0,g_pfx+"S2",  OBJPROP_YDISTANCE, cY+35);
+      ObjectSetInteger(0,g_pfx+"NB",  OBJPROP_XDISTANCE, g_ox);
+      ObjectSetInteger(0,g_pfx+"NB",  OBJPROP_YDISTANCE, cY+36);
+      ObjectSetInteger(0,g_pfx+"NL",  OBJPROP_XDISTANCE, g_ox+8);
+      ObjectSetInteger(0,g_pfx+"NL",  OBJPROP_YDISTANCE, cY+42);
+      ObjectSetInteger(0,g_pfx+"NV",  OBJPROP_XDISTANCE, g_ox+PW-6);
+      ObjectSetInteger(0,g_pfx+"NV",  OBJPROP_YDISTANCE, cY+38);
+      ObjectSetInteger(0,g_pfx+"S3",  OBJPROP_XDISTANCE, g_ox);
+      ObjectSetInteger(0,g_pfx+"S3",  OBJPROP_YDISTANCE, cY+56);
+
+      int bsY=cY+57, barY=bsY+14;
+      ObjectSetInteger(0,g_pfx+"BS",  OBJPROP_XDISTANCE, g_ox);
+      ObjectSetInteger(0,g_pfx+"BS",  OBJPROP_YDISTANCE, bsY);
+      ObjectSetInteger(0,g_pfx+"BHL", OBJPROP_XDISTANCE, g_ox+BAR_X);
+      ObjectSetInteger(0,g_pfx+"BHL", OBJPROP_YDISTANCE, bsY+2);
+      ObjectSetInteger(0,g_pfx+"BHR", OBJPROP_XDISTANCE, g_ox+PW-BAR_X);
+      ObjectSetInteger(0,g_pfx+"BHR", OBJPROP_YDISTANCE, bsY+2);
+      ObjectSetInteger(0,g_pfx+"OVL", OBJPROP_XDISTANCE, g_ox+PW/2);
+      ObjectSetInteger(0,g_pfx+"OVL", OBJPROP_YDISTANCE, bsY+2);
+      ObjectSetInteger(0,g_pfx+"BLB", OBJPROP_XDISTANCE, g_ox+BAR_X);
+      ObjectSetInteger(0,g_pfx+"BLB", OBJPROP_YDISTANCE, barY);
+      ObjectSetInteger(0,g_pfx+"DDF", OBJPROP_YDISTANCE, barY);
+      ObjectSetInteger(0,g_pfx+"TGF", OBJPROP_YDISTANCE, barY);
+      ObjectSetInteger(0,g_pfx+"CDV", OBJPROP_YDISTANCE, barY);
+      ObjectSetInteger(0,g_pfx+"OV",  OBJPROP_XDISTANCE, g_ox+PW/2);
+      ObjectSetInteger(0,g_pfx+"OV",  OBJPROP_YDISTANCE, barY+BAR_H+2);
+   }
+
+   if(ma_panelExpanded) RepositionMaRows();
+}
+
+//==================================================================
+// ── DAY / BALANCE LOGIC (PnL) ─────────────────────────────────────
+//==================================================================
+datetime DayStart()
+{
+   datetime now=TimeGMT(); MqlDateTime d; TimeToStruct(now,d);
+   d.hour=InpResetHour_UTC; d.min=InpResetMin_UTC; d.sec=1;
+   datetime r=StructToTime(d);
+   return now<r ? r-86400 : r;
+}
+void UpdateDayBal()
+{
+   datetime ds=DayStart();
+   if(ds==g_lastDay&&g_dayStartBal>0) return;
+   double bal=AccountInfoDouble(ACCOUNT_BALANCE),net=0;
+   HistorySelect(ds,TimeCurrent());
+   for(int i=0;i<HistoryDealsTotal();i++)
+   {
+      ulong tk=HistoryDealGetTicket(i); if(!tk) continue;
+      ENUM_DEAL_TYPE  dt=(ENUM_DEAL_TYPE) HistoryDealGetInteger(tk,DEAL_TYPE);
+      ENUM_DEAL_ENTRY de=(ENUM_DEAL_ENTRY)HistoryDealGetInteger(tk,DEAL_ENTRY);
+      if(dt!=DEAL_TYPE_BUY&&dt!=DEAL_TYPE_SELL) continue;
+      if(de!=DEAL_ENTRY_OUT&&de!=DEAL_ENTRY_INOUT) continue;
+      net+=HistoryDealGetDouble(tk,DEAL_PROFIT)
+          +HistoryDealGetDouble(tk,DEAL_SWAP)
+          +HistoryDealGetDouble(tk,DEAL_COMMISSION);
+   }
+   g_dayStartBal=bal-net; g_lastDay=ds;
+}
+
+//==================================================================
+// ── AUTO POSITION (PnL) ───────────────────────────────────────────
+//==================================================================
+void ApplyAutoPos()
+{
+   int cw=(int)ChartGetInteger(0,CHART_WIDTH_IN_PIXELS);
+   int ch=(int)ChartGetInteger(0,CHART_HEIGHT_IN_PIXELS);
+   if(cw<=0||ch<=0) return;
+   
+   int bm=2, tm=6, sm=6;
+   switch(InpDefaultPos)
+   {
+      case POS_LOWER_RIGHT: g_ox=cw-PW-sm;  g_oy=ch-HDR_H-bm; break;
+      case POS_LOWER_LEFT:  g_ox=sm;        g_oy=ch-HDR_H-bm; break;
+      case POS_UPPER_RIGHT: g_ox=cw-PW-sm;  g_oy=tm;          break;
+      case POS_UPPER_LEFT:  g_ox=sm;        g_oy=tm;          break;
+   }
+   g_autoPositioned=true;
+   g_rebuild=true;
+}
+
+//==================================================================
+// ── COMPUTE BAR WIDTHS (PnL) ──────────────────────────────────────
+//==================================================================
+void CalcBar(int &lW,int &rW,int &ddFx,int &tgFx)
+{
+   double ddu=MathMax(0,InpStartingBalance-AccountInfoDouble(ACCOUNT_EQUITY));
+   double ovn=AccountInfoDouble(ACCOUNT_BALANCE)-InpStartingBalance;
+   double tot=InpMaxDD+InpOverallTarget;
+   lW  =(int)MathRound(BAR_W*InpMaxDD/tot);
+   rW  =BAR_W-lW;
+   ddFx=InpMaxDD>0            ?(int)MathMin(ddu/InpMaxDD*lW,            (double)lW):0;
+   tgFx=(InpOverallTarget>0&&ovn>0)?(int)MathMin(ovn/InpOverallTarget*rW,(double)rW):0;
+}
+
+//==================================================================
+// ── MAIN DRAW (PnL + combined header) ────────────────────────────
+//==================================================================
+void Draw()
+{
+   // Compute PnL values
+   datetime ds=DayStart();
+   double dp2=0,dl=0;
+   HistorySelect(ds,ds+86400);
+   for(int i=0;i<HistoryDealsTotal();i++)
+   {
+      ulong tk=HistoryDealGetTicket(i); if(!tk) continue;
+      ENUM_DEAL_TYPE  dt=(ENUM_DEAL_TYPE) HistoryDealGetInteger(tk,DEAL_TYPE);
+      ENUM_DEAL_ENTRY de=(ENUM_DEAL_ENTRY)HistoryDealGetInteger(tk,DEAL_ENTRY);
+      if(dt!=DEAL_TYPE_BUY&&dt!=DEAL_TYPE_SELL) continue;
+      if(de!=DEAL_ENTRY_OUT&&de!=DEAL_ENTRY_INOUT) continue;
+      double p=HistoryDealGetDouble(tk,DEAL_PROFIT)
+              +HistoryDealGetDouble(tk,DEAL_SWAP)
+              +HistoryDealGetDouble(tk,DEAL_COMMISSION);
+      if(p>0) dp2+=p; else dl+=p;
+   }
+   for(int i=0;i<PositionsTotal();i++)
+   {
+      ulong ptk=PositionGetTicket(i); if(!ptk) continue;
+      double p=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+      if(p>0) dp2+=p; else dl+=p;
+   }
+   double dn  = dp2+dl;
+   double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+   double eq  = AccountInfoDouble(ACCOUNT_EQUITY);
+   double ovn = bal-InpStartingBalance;
+   int lW,rW,ddFx,tgFx; CalcBar(lW,rW,ddFx,tgFx);
+   double ddu = MathMax(0,InpStartingBalance-eq);
+   double ddP = InpMaxDD>0 ? ddu/InpMaxDD*100.0 : 0;
+
+   color ddC = ddP>=80?clrRed:ddP>=50?clrOrange:(color)C'200,40,40';
+   color tgC = ovn>=InpOverallTarget?(color)C'0,200,0':ovn>0?(color)C'0,160,60':(color)C'160,200,160';
+   color ovC = ovn<0?ddC:ovn>0?tgC:InpTextColor;
+   color eqC = eq>=InpStartingBalance?(color)C'255,220,50':(color)C'255,140,80';
+   color nvC = dn>=0?InpNetPosColor:InpNetNegColor;
+
+   string eqS = InpCurrency+DoubleToString(eq,2);
+   string pvS = (dp2>=0?"+":"")+InpCurrency+DoubleToString(dp2,2);
+   string lvS = "-"+InpCurrency+DoubleToString(MathAbs(dl),2);
+   string nvS = (dn>=0?"+":"")+InpCurrency+DoubleToString(dn,2);
+   string ovS = (ovn>=0?"+":"")+InpCurrency+DoubleToString(ovn,2);
+   string ddH = "MaxDD "+InpCurrency+DoubleToString(InpMaxDD,0);
+   string tgH = "Target "+InpCurrency+DoubleToString(InpOverallTarget,0);
+
+   // ── FULL REBUILD ─────────────────────────────────────────────
+   if(g_rebuild)
+   {
+      ObjectsDeleteAll(0,g_pfx);
+      DestroyMaRows();
+      ObjectDelete(0,HDR_MA_BTN);
+      g_rebuild=false;
+
+      int hY=HdrY(), cY=ContentY();
+      
+      // Dynamic boundary checks for Outer BG
+      int topY = PnlTopY();
+      int botY = PnlBotY();
+      if(ma_panelExpanded) {
+         topY = (int)MathMin(topY, MA_RowsY());
+         botY = (int)MathMax(botY, MA_RowsY() + MA_TotalH());
+      }
+      int combinedH = botY - topY;
+
+      R(g_pfx+"BG", g_ox, topY, PW, combinedH, InpBgColor, InpBorderColor, 1);
+      R(g_pfx+"HD", g_ox, hY, PW, HDR_H, InpHdrBg, InpHdrBg, 0);
+      L(g_pfx+"TT", g_ox+8,  hY+8, "= EQ", InpHdrText, 8);
+      L(g_pfx+"EQ", g_ox+50, hY+5, eqS, eqC, InpEqFontSize, ANCHOR_LEFT_UPPER);
+
+      // MA Toggle Button inside Main Header (Smaller, lighter blue, size 7)
+      B(HDR_MA_BTN, g_ox+PW-34, hY+7, 26, 16, ma_panelExpanded?"MA▲":"MA▼", (color)C'40,55,120', clrWhite, 7);
+      ObjectSetInteger(0,HDR_MA_BTN,OBJPROP_SELECTABLE,true);
+      ObjectSetInteger(0,HDR_MA_BTN,OBJPROP_HIDDEN,false);
+
+      if(!g_col)
+      {
+         L(g_pfx+"PL", g_ox+8,    cY+4,  "Profit",  InpTextColor,   9);
+         L(g_pfx+"PV", g_ox+PW-6, cY+2,  pvS, InpProfitColor, 11, ANCHOR_RIGHT_UPPER);
+         R(g_pfx+"S1", g_ox,      cY+17, PW,1, InpSepColor,InpSepColor,0);
+         L(g_pfx+"LL", g_ox+8,    cY+22, "Loss",    InpTextColor,   9);
+         L(g_pfx+"LV", g_ox+PW-6, cY+20, lvS, InpLossColor,   11, ANCHOR_RIGHT_UPPER);
+         R(g_pfx+"S2", g_ox,      cY+35, PW,1, InpSepColor,InpSepColor,0);
+         R(g_pfx+"NB", g_ox,      cY+36, PW,20,(color)C'235,240,255',(color)C'235,240,255',0);
+         L(g_pfx+"NL", g_ox+8,    cY+42, "Net PnL", InpTextColor,   9);
+         L(g_pfx+"NV", g_ox+PW-6, cY+38, nvS, nvC, 13, ANCHOR_RIGHT_UPPER);
+         R(g_pfx+"S3", g_ox,      cY+56, PW,1, InpSepColor,InpSepColor,0);
+         int bsY=cY+57, barY=bsY+14;
+         R(g_pfx+"BS",  g_ox, bsY, PW,46,(color)C'244,247,255',(color)C'244,247,255',0);
+         L(g_pfx+"BHL", g_ox+BAR_X,    bsY+2, ddH, (color)C'170,40,40',7);
+         L(g_pfx+"BHR", g_ox+PW-BAR_X, bsY+2, tgH, (color)C'30,130,30',7,ANCHOR_RIGHT_UPPER);
+         L(g_pfx+"OVL", g_ox+PW/2,     bsY+2, "overall",(color)C'140,150,195',6,ANCHOR_UPPER);
+         R(g_pfx+"BLB", g_ox+BAR_X,              barY, lW,            BAR_H,(color)C'255,222,222',(color)C'200,155,155',1);
+         R(g_pfx+"BRB", g_ox+BAR_X+lW,           barY, rW,            BAR_H,(color)C'222,255,222',(color)C'155,200,155',1);
+         R(g_pfx+"DDF", g_ox+BAR_X+lW-MathMax(ddFx,1),barY,MathMax(ddFx,1),BAR_H,ddC,ddC,0);
+         R(g_pfx+"TGF", g_ox+BAR_X+lW,           barY, MathMax(tgFx,1),BAR_H,tgC,tgC,0);
+         R(g_pfx+"CDV", g_ox+BAR_X+lW-1,         barY, 2,BAR_H,InpTextColor,InpTextColor,0);
+         L(g_pfx+"OV",  g_ox+PW/2,               barY+BAR_H+2,ovS,ovC,12,ANCHOR_UPPER);
+      }
+
+      if(ma_panelExpanded) BuildMaRows();
+      return;
+   }
+
+   // ── VALUE-ONLY UPDATE (timer — zero blink) ────────────────────
+   ObjectSetString (0,g_pfx+"EQ", OBJPROP_TEXT,  eqS);
+   ObjectSetInteger(0,g_pfx+"EQ", OBJPROP_COLOR, eqC);
+   if(g_col) return;
+
+   ObjectSetString (0,g_pfx+"PV", OBJPROP_TEXT,  pvS);
+   ObjectSetString (0,g_pfx+"LV", OBJPROP_TEXT,  lvS);
+   ObjectSetString (0,g_pfx+"NV", OBJPROP_TEXT,  nvS);
+   ObjectSetInteger(0,g_pfx+"NV", OBJPROP_COLOR, nvC);
+
+   int cY=ContentY(), bsY=cY+57, barY=bsY+14;
+   ObjectSetInteger(0,g_pfx+"DDF",OBJPROP_XDISTANCE,g_ox+BAR_X+lW-MathMax(ddFx,1));
+   ObjectSetInteger(0,g_pfx+"DDF",OBJPROP_XSIZE,    MathMax(ddFx,1));
+   ObjectSetInteger(0,g_pfx+"DDF",OBJPROP_BGCOLOR,  ddC);
+   ObjectSetInteger(0,g_pfx+"TGF",OBJPROP_XDISTANCE,g_ox+BAR_X+lW);
+   ObjectSetInteger(0,g_pfx+"TGF",OBJPROP_XSIZE,    MathMax(tgFx,1));
+   ObjectSetInteger(0,g_pfx+"TGF",OBJPROP_BGCOLOR,  tgC);
+   ObjectSetString (0,g_pfx+"OV", OBJPROP_TEXT,  ovS);
+   ObjectSetInteger(0,g_pfx+"OV", OBJPROP_COLOR, ovC);
+}
+
+//==================================================================
+// ── MA LINES (from original MA script — unchanged logic) ─────────
+//==================================================================
+void DeleteMASegments(int m)
+{
+   string pfx=ma_linePrefix+IntegerToString(m)+"_";
+   for(int j=ObjectsTotal(0)-1;j>=0;j--)
+   {
+      string nm=ObjectName(0,j);
+      if(StringFind(nm,pfx)==0) ObjectDelete(0,nm);
+   }
+}
+
+void DrawMALines(const int rates_total,const int prev_calculated,const datetime &time[])
+{
+   if(rates_total<2) return;
+   int drawBars=MathMin(rates_total,500);
+   ArraySetAsSeries(time,true);
+   int limit=drawBars;
+   if(prev_calculated==rates_total) limit=2;
+
+   for(int m=0;m<MA_COUNT;m++)
+   {
+      if(!ma_visible[m]) continue;
+      if(ma_handles[m]==INVALID_HANDLE) continue;
+      double buf[]; ArraySetAsSeries(buf,true);
+      if(CopyBuffer(ma_handles[m],0,0,limit+1,buf)<=0) continue;
+      for(int i=1;i<limit;i++)
+      {
+         double p1=buf[i],p2=buf[i-1];
+         if(p1==0||p2==0) continue;
+         string seg=ma_linePrefix+IntegerToString(m)+"_"+IntegerToString(i);
+         datetime t1=time[i],t2=time[i-1];
+         if(ObjectFind(0,seg)<0)
+         {
+            ObjectCreate(0,seg,OBJ_TREND,0,t1,p1,t2,p2);
+            ObjectSetInteger(0,seg,OBJPROP_COLOR,      ma_colors[m]);
+            ObjectSetInteger(0,seg,OBJPROP_STYLE,      STYLE_SOLID);
+            ObjectSetInteger(0,seg,OBJPROP_WIDTH,      ma_widths[m]);
+            ObjectSetInteger(0,seg,OBJPROP_RAY_RIGHT,  false);
+            ObjectSetInteger(0,seg,OBJPROP_BACK,       true);
+            ObjectSetInteger(0,seg,OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0,seg,OBJPROP_HIDDEN,     true);
+            ObjectSetInteger(0,seg,OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+         }
+         else
+         {
+            ObjectSetInteger(0,seg,OBJPROP_TIME,0,t1); ObjectSetDouble(0,seg,OBJPROP_PRICE,0,p1);
+            ObjectSetInteger(0,seg,OBJPROP_TIME,1,t2); ObjectSetDouble(0,seg,OBJPROP_PRICE,1,p2);
+         }
+      }
+   }
+}
+
+void RedrawSingleMA(int m)
+{
+   DeleteMASegments(m);
+   if(!ma_visible[m]) return;
+   if(ma_handles[m]==INVALID_HANDLE) return;
+   int rates_total=(int)ChartGetInteger(0,CHART_VISIBLE_BARS)+500;
+   datetime times[]; ArraySetAsSeries(times,true);
+   int copied=CopyTime(_Symbol,PERIOD_CURRENT,0,rates_total,times);
+   if(copied<=0) return;
+   int drawBars=MathMin(copied,500);
+   double buf[]; ArraySetAsSeries(buf,true);
+   if(CopyBuffer(ma_handles[m],0,0,drawBars,buf)<=0) return;
+   for(int i=1;i<drawBars-1;i++)
+   {
+      double p1=buf[i],p2=buf[i-1];
+      if(p1==0||p2==0) continue;
+      string seg=ma_linePrefix+IntegerToString(m)+"_"+IntegerToString(i);
+      datetime t1=times[i],t2=times[i-1];
+      ObjectCreate(0,seg,OBJ_TREND,0,t1,p1,t2,p2);
+      ObjectSetInteger(0,seg,OBJPROP_COLOR,      ma_colors[m]);
+      ObjectSetInteger(0,seg,OBJPROP_STYLE,      STYLE_SOLID);
+      ObjectSetInteger(0,seg,OBJPROP_WIDTH,      ma_widths[m]);
+      ObjectSetInteger(0,seg,OBJPROP_RAY_RIGHT,  false);
+      ObjectSetInteger(0,seg,OBJPROP_BACK,       true);
+      ObjectSetInteger(0,seg,OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0,seg,OBJPROP_HIDDEN,     true);
+      ObjectSetInteger(0,seg,OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+   }
+}
+
+//==================================================================
+// ── OnInit ────────────────────────────────────────────────────────
+//==================================================================
+int OnInit()
+{
+   ChartSetInteger(0,CHART_EVENT_OBJECT_CREATE,true);
+   ChartSetInteger(0,CHART_EVENT_OBJECT_DELETE,true);
+   ChartSetInteger(0,CHART_EVENT_MOUSE_MOVE,   true);
+
+   // Check if user completely changed the Default Snap Setting in Inputs 
+   int savedSetting = -1;
+   if(GlobalVariableCheck(GV_SET)) {
+      savedSetting = (int)GlobalVariableGet(GV_SET);
+   }
+
+   // Restore Position if the user previously dragged it manually (and didn't just change settings)
+   if(savedSetting == (int)InpDefaultPos && GlobalVariableCheck(GV_X) && GlobalVariableCheck(GV_Y))
+   {
+      g_ox = (int)GlobalVariableGet(GV_X);
+      g_oy = (int)GlobalVariableGet(GV_Y);
+      g_autoPositioned = true;     // Prevent snap because user dragged it manually before
+      g_wasManuallyDragged = true; // Mark as dragged so it keeps saving
+   }
+   else
+   {
+      // No saved position OR the user just changed the Default Corner dropdown setting
+      g_autoPositioned = false;     // Let ApplyAutoPos() snap it automatically
+      g_wasManuallyDragged = false; // It's not a manual drag right now
+   }
+   
+   // Remember the current dropdown setting for next time
+   GlobalVariableSet(GV_SET, (int)InpDefaultPos);
+
+   // MA setup — restore visibility
+   ma_periods[0]=MA1_Period; ma_colors[0]=MA1_Color; ma_widths[0]=MA1_Width; ma_visible[0]=true;
+   ma_periods[1]=MA2_Period; ma_colors[1]=MA2_Color; ma_widths[1]=MA2_Width; ma_visible[1]=true;
+   ma_periods[2]=MA3_Period; ma_colors[2]=MA3_Color; ma_widths[2]=MA3_Width; ma_visible[2]=true;
+   ma_periods[3]=MA4_Period; ma_colors[3]=MA4_Color; ma_widths[3]=MA4_Width; ma_visible[3]=true;
+
+   for(int i=0;i<MA_COUNT;i++)
+   {
+      string gvName=GV_VIS_PREFIX+IntegerToString(i);
+      if(GlobalVariableCheck(gvName))
+         ma_visible[i]=(GlobalVariableGet(gvName)>0.0);
+   }
+
+   for(int i=0;i<MA_COUNT;i++)
+   {
+      ma_handles[i]=iMA(_Symbol,PERIOD_CURRENT,ma_periods[i],0,MODE_EMA,PRICE_CLOSE);
+      if(ma_handles[i]==INVALID_HANDLE) Print("MA handle ",i," failed");
+   }
+
+   g_col=true;
+   g_rebuild=true;
+   UpdateDayBal(); Draw(); EventSetTimer(1);
+   ChartRedraw(0);
+   return INIT_SUCCEEDED;
+}
+
+//==================================================================
+// ── OnDeinit ──────────────────────────────────────────────────────
+//==================================================================
+void OnDeinit(const int reason)
+{
+   EventKillTimer();
+   ChartSetInteger(0,CHART_EVENT_MOUSE_MOVE,false);
+
+   // Only save exact X/Y position if it was MANUALLY dragged by the user.
+   if(g_wasManuallyDragged)
+   {
+      GlobalVariableSet(GV_X, g_ox);
+      GlobalVariableSet(GV_Y, g_oy);
+   }
+   else
+   {
+      // If it's just sitting in the default corner, delete old saves so it can naturally snap on restart
+      if(GlobalVariableCheck(GV_X)) GlobalVariableDel(GV_X);
+      if(GlobalVariableCheck(GV_Y)) GlobalVariableDel(GV_Y);
+   }
+
+   // Save MA visibility
+   for(int i=0;i<MA_COUNT;i++)
+   {
+      string gvName=GV_VIS_PREFIX+IntegerToString(i);
+      GlobalVariableSet(gvName, ma_visible[i]?1.0:0.0);
+   }
+
+   ObjectsDeleteAll(0,g_pfx);
+   DestroyMaRows();
+   ObjectDelete(0,HDR_MA_BTN);
+   for(int i=0;i<MA_COUNT;i++)
+   {
+      if(ma_handles[i]!=INVALID_HANDLE) IndicatorRelease(ma_handles[i]);
+      DeleteMASegments(i);
+   }
+   ChartRedraw(0);
+}
+
+//==================================================================
+// ── OnCalculate ───────────────────────────────────────────────────
+//==================================================================
+int OnCalculate(const int rates_total,const int prev_calculated,
+                const datetime &time[],const double &open[],
+                const double &high[],const double &low[],const double &close[],
+                const long &tick_volume[],const long &volume[],const int &spread[])
+{
+   DrawMALines(rates_total,prev_calculated,time);
+   ChartRedraw(0);
+   return rates_total;
+}
+
+//==================================================================
+// ── OnTimer ───────────────────────────────────────────────────────
+//==================================================================
+void OnTimer()
+{
+   if(!g_autoPositioned)
+   {
+      ApplyAutoPos();
+      if(g_autoPositioned){ g_rebuild=true; Draw(); ChartRedraw(0); return; }
+   }
+   UpdateDayBal(); Draw(); ChartRedraw(0);
+}
+
+//==================================================================
+// ── OnChartEvent ─────────────────────────────────────────────────
+//==================================================================
+void OnChartEvent(const int id,const long &lp,const double &dp,const string &sp)
+{
+   int x=(int)lp, y=(int)dp;
+
+   //----------------------------------------------------------------
+   // ESC — cancel rectangle drawing
+   //----------------------------------------------------------------
+   if(id==CHARTEVENT_KEYDOWN && lp==27)
+   {
+      if(isDrawing)
+      {
+         if(clickStep==1) ObjectDelete(0,currentObjName);
+         isDrawing=false; clickStep=0;
+         if(ObjectFind(0,HDR_RECT_BTN)>=0)
+         {
+            ObjectSetInteger(0,HDR_RECT_BTN,OBJPROP_BGCOLOR,CLR_HEADER_BG);
+            ObjectSetInteger(0,HDR_RECT_BTN,OBJPROP_COLOR,CLR_TEXT_DARK);
+         }
+         ChartRedraw(0);
+      }
+      return;
+   }
+
+   // H key shortcut — toggle PnL rows
+   if(id==CHARTEVENT_KEYDOWN && lp==72)
+   {
+      g_col=!g_col; g_rebuild=true;
+      Draw(); ChartRedraw(0); return;
+   }
+
+   //----------------------------------------------------------------
+   // OBJECT CLICK
+   //----------------------------------------------------------------
+   if(id==CHARTEVENT_OBJECT_CLICK)
+   {
+      // ── Main Header MA Panel toggle ──────────────
+      if(sp==HDR_MA_BTN)
+      {
+         ma_panelExpanded=!ma_panelExpanded;
+         ObjectSetInteger(0,HDR_MA_BTN,OBJPROP_STATE, false);
+         ObjectSetString(0,HDR_MA_BTN,OBJPROP_TEXT, ma_panelExpanded?"MA▲":"MA▼");
+         g_rebuild=true; Draw(); ChartRedraw(0); return;
+      }
+
+      // ── Rectangle tool inside MA panel ───────────
+      if(sp==HDR_RECT_BTN)
+      {
+         isDrawing=!isDrawing; clickStep=0;
+         ObjectSetInteger(0,HDR_RECT_BTN,OBJPROP_STATE, false);
+         ObjectSetInteger(0,HDR_RECT_BTN,OBJPROP_BGCOLOR, isDrawing?CLR_BTN_ACTIVE:CLR_HEADER_BG);
+         ObjectSetInteger(0,HDR_RECT_BTN,OBJPROP_COLOR, isDrawing?clrWhite:CLR_TEXT_DARK);
+         ChartRedraw(0); return;
+      }
+
+      // ── Eye buttons (MA visibility toggles) ─────────────────────
+      for(int i=0;i<MA_COUNT;i++)
+      {
+         string eye="MA_Eye_"+IntegerToString(i);
+         if(sp==eye)
+         {
+            ma_visible[i]=!ma_visible[i];
+            string gvName=GV_VIS_PREFIX+IntegerToString(i);
+            GlobalVariableSet(gvName,ma_visible[i]?1.0:0.0);
+            ObjectSetString (0,eye,OBJPROP_TEXT, ma_visible[i]?"👁":"◌");
+            ObjectSetInteger(0,eye,OBJPROP_STATE,false);
+            RedrawSingleMA(i);
+            ChartRedraw(0); return;
+         }
+      }
+   }
+
+   //----------------------------------------------------------------
+   // MOUSE MOVE — drag panel + live rectangle preview
+   //----------------------------------------------------------------
+   if(id==CHARTEVENT_MOUSE_MOVE)
+   {
+      bool held=(StringFind(sp,"1")>=0);
+      int mx=x, my=y;
+
+      if(!held)
+      {
+         if(g_drag)
+         {
+            g_drag=false;
+            g_wasManuallyDragged=true; // Flag it as manually dragged!
+            GlobalVariableSet(GV_X,g_ox);
+            GlobalVariableSet(GV_Y,g_oy);
+            g_rebuild=true; Draw(); ChartRedraw(0);
+         }
+         else if(g_mouseOnHdr)
+         {
+            // Short click on header LEFT side → toggle PnL rows
+            int dx=MathAbs(mx-g_clickX), dy=MathAbs(my-g_clickY);
+            bool onMABtn=(g_clickX>=g_ox+PW-35 && g_clickX<=g_ox+PW);
+            if(dx<6 && dy<6 && !onMABtn)
+            {
+               g_col=!g_col; g_rebuild=true;
+               Draw(); ChartRedraw(0);
+            }
+         }
+         g_mouseOnHdr=false;
+         return;
+      }
+
+      // Mouse held
+      bool onHdr=(mx>=g_ox && mx<=g_ox+PW && my>=HdrY() && my<=HdrY()+HDR_H);
+
+      if(!g_drag && !g_mouseOnHdr && onHdr)
+      {
+         g_mouseOnHdr=true; g_clickX=mx; g_clickY=my;
+         g_dDX=mx-g_ox; g_dDY=my-HdrY();
+      }
+
+      if(g_mouseOnHdr && !g_drag)
+      {
+         if(MathAbs(mx-g_clickX)>4 || MathAbs(my-g_clickY)>4)
+            g_drag=true;
+      }
+
+      if(g_drag)
+      {
+         int cw=(int)ChartGetInteger(0,CHART_WIDTH_IN_PIXELS);
+         int ch=(int)ChartGetInteger(0,CHART_HEIGHT_IN_PIXELS);
+         g_ox=MathMax(0,MathMin(mx-g_dDX,cw-PW));
+         
+         // Dynamically restrict drag based on expanded content height
+         int ny = my-g_dDY;
+         int topOffset = g_oy - PnlTopY();
+         int botOffset = PnlBotY() - g_oy;
+         if(ma_panelExpanded) {
+            topOffset = MathMax(topOffset, g_oy - MA_RowsY());
+            botOffset = MathMax(botOffset, (MA_RowsY() + MA_TotalH()) - g_oy);
+         }
+         ny = MathMax(topOffset, MathMin(ny, ch - botOffset));
+         
+         g_oy=ny;
+         Reposition();
+         ChartRedraw(0);
+      }
+
+      // Live rectangle preview while drawing - Zone moves Y axis only, extending infinitely to future
+      if(isDrawing && clickStep==1)
+      {
+         datetime t; double p; int w;
+         if(ChartXYToTimePrice(0,x,y,w,t,p))
+         {
+            ObjectSetDouble (0,currentObjName,OBJPROP_PRICE,1,p); // Adjust height only
+            // Keep X axis fixed far into the future to create an infinite zone effect
+            datetime futureTime = TimeCurrent() + 86400 * 365 * 10;
+            ObjectSetInteger(0,currentObjName,OBJPROP_TIME,1,futureTime); 
+            ChartRedraw(0);
+         }
+      }
+      return;
+   }
+
+   //----------------------------------------------------------------
+   // CHART CHANGE (scroll / zoom / resize)
+   //----------------------------------------------------------------
+   if(id==CHARTEVENT_CHART_CHANGE)
+   {
+      if(!g_autoPositioned){ ApplyAutoPos(); Draw(); ChartRedraw(0); return; }
+      Reposition(); ChartRedraw(0);
+   }
+
+   //----------------------------------------------------------------
+   // CHART CLICK — draw true shape zone (infinite rectangle)
+   //----------------------------------------------------------------
+   if(id==CHARTEVENT_CLICK && isDrawing && !g_drag)
+   {
+      if(GetTickCount()-lastClickTime<200) return;
+      lastClickTime=GetTickCount();
+
+      // Block clicks inside full panel boundary area
+      int panelTop=PnlTopY();
+      int panelBot=PnlBotY();
+      if(ma_panelExpanded) {
+         panelTop = (int)MathMin(panelTop, MA_RowsY());
+         panelBot = (int)MathMax(panelBot, MA_RowsY() + MA_TotalH());
+      }
+      if(x>=g_ox && x<=g_ox+PW && y>=panelTop && y<=panelBot) return;
+
+      datetime t; double p; int w;
+      if(ChartXYToTimePrice(0,x,y,w,t,p))
+      {
+         if(clickStep==0)
+         {
+            startX=x; startY=y; startPrice=p; startTime=t;
+            currentObjName="ZoneRect_"+IntegerToString(GetTickCount());
+            
+            // Push the 2nd time coordinate 10 years into the future automatically
+            datetime futureTime = TimeCurrent() + 86400 * 365 * 10; 
+            
+            ObjectCreate(0,currentObjName,OBJ_RECTANGLE,0,startTime,startPrice,futureTime,startPrice);
+            ObjectSetInteger(0,currentObjName,OBJPROP_COLOR,      clrGold); 
+            ObjectSetInteger(0,currentObjName,OBJPROP_FILL,       true);   
+            ObjectSetInteger(0,currentObjName,OBJPROP_BACK,       true);
+            ObjectSetInteger(0,currentObjName,OBJPROP_SELECTABLE, true);
+            ObjectSetInteger(0,currentObjName,OBJPROP_SELECTED,   true);
+            ObjectSetInteger(0,currentObjName,OBJPROP_HIDDEN,     false);
+            
+            // This ensures it displays on all timeframes regardless of where it is drawn
+            ObjectSetInteger(0,currentObjName,OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+            
+            clickStep=1;
+         }
+         else if(clickStep==1)
+         {
+            // Finish drawing
+            if(MathAbs(x-startX)<5 && MathAbs(y-startY)<5) return;
+            
+            datetime futureTime = TimeCurrent() + 86400 * 365 * 10;
+            ObjectSetInteger(0,currentObjName,OBJPROP_TIME,1,futureTime); // Lock to infinity
+            ObjectSetDouble (0,currentObjName,OBJPROP_PRICE,1,p);         // Set final Y height
+            ObjectSetInteger(0,currentObjName,OBJPROP_SELECTED,true); 
+            
+            isDrawing=false; clickStep=0;
+            if(ObjectFind(0,HDR_RECT_BTN)>=0)
+            {
+               ObjectSetInteger(0,HDR_RECT_BTN,OBJPROP_BGCOLOR,CLR_HEADER_BG);
+               ObjectSetInteger(0,HDR_RECT_BTN,OBJPROP_COLOR,CLR_TEXT_DARK);
+            }
+         }
+         ChartRedraw(0);
+      }
+   }
+}
+//+------------------------------------------------------------------+
