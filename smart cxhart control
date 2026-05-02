@@ -1,0 +1,384 @@
+//+------------------------------------------------------------------+
+//|                                       SmartChartControl.mq5      |
+//|    TradingView-Style Chart Control — v4.0                        |
+//|                                                                  |
+//|  ZOOM: Smooth, anchored to mouse cursor price (no wobble)        |
+//|  DRAG: Three-layer object protection                             |
+//|    L1 - Proximity scan at drag start                             |
+//|    L2 - Dead-zone buffer (lets OBJECT_DRAG fire first)           |
+//|    L3 - OBJECT_DRAG mid-drag lock + full movement reversal       |
+//+------------------------------------------------------------------+
+#property indicator_chart_window
+#property indicator_plots 0
+
+//--- Instructions (read-only — shown in Properties dialog)
+input string _info1 = "===== HOW TO USE =====";          // .
+input string _info2 = "Drag on empty chart = move chart"; // Drag: left/right/up/down freely
+input string _info3 = "Drag on any object  = move object";// SL/TP/lines/rects stay independent
+input string _info4 = "Scroll wheel        = zoom in/out";// Anchored to mouse cursor price
+input string _info5 = "Press X key         = toggle mode";// Switch Smart Mode / MT5 Default
+input string _info6 = "======================";           // .
+
+//--- Settings
+input double InpZoomSpeed = 0.04; // Zoom Speed  → 0.02=slow · 0.04=smooth · 0.10=fast
+input int    InpObjPixTol = 12;   // Object detect radius (pixels, raise if objects still slip)
+input int    InpDeadZone  = 8;    // Dead-zone pixels before chart drag activates
+
+//--- Drag state
+int    last_drag_x   = 0;
+int    last_drag_y   = 0;
+double acc_x         = 0.0;
+bool   is_dragging   = false;
+bool   drag_clean    = false;
+bool   custom_active = true;
+int    dead_px       = 0;
+
+// Movement tracker for Layer 3 reversal
+int    steps_taken  = 0;
+double shift_taken  = 0.0;
+
+//--- Always-current mouse position (for zoom anchoring)
+int    cur_mouse_x  = 0;
+int    cur_mouse_y  = 0;
+
+//+------------------------------------------------------------------+
+int OnInit()
+  {
+   ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE,  true);
+   ChartSetInteger(0, CHART_EVENT_MOUSE_WHEEL, true);
+   EnableCustomMode();
+   return(INIT_SUCCEEDED);
+  }
+
+void OnDeinit(const int reason)
+  {
+   Comment("");
+   DisableCustomMode();
+  }
+
+//+------------------------------------------------------------------+
+void EnableCustomMode()
+  {
+   ChartSetInteger(0, CHART_SCALEFIX,     true);
+   ChartSetInteger(0, CHART_AUTOSCROLL,  false);
+   ChartSetInteger(0, CHART_MOUSE_SCROLL, false);
+   Comment("");
+   ChartRedraw(0);
+  }
+
+void DisableCustomMode()
+  {
+   double pMax = ChartGetDouble(0, CHART_PRICE_MAX);
+   double pMin = ChartGetDouble(0, CHART_PRICE_MIN);
+   ChartSetInteger(0, CHART_SCALEFIX,    false);
+   ChartSetInteger(0, CHART_MOUSE_SCROLL, true);
+   ChartSetDouble(0, CHART_FIXED_MAX, pMax);
+   ChartSetDouble(0, CHART_FIXED_MIN, pMin);
+   Comment("");
+   ChartRedraw(0);
+  }
+
+//+------------------------------------------------------------------+
+// LAYER 1: Proximity scan — is mouse near ANY visible object?
+// Covers HLine/VLine, trends, rectangles, arrows, fibs, text.
+// Does NOT skip non-selectable — catches broker/indicator lines too.
+//+------------------------------------------------------------------+
+bool IsMouseNearObject(int mx, int my)
+  {
+   datetime t; double p; int win;
+   if(!ChartXYToTimePrice(0, mx, my, win, t, p)) return false;
+
+   double h    = (double)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+   double pMax = ChartGetDouble(0, CHART_FIXED_MAX);
+   double pMin = ChartGetDouble(0, CHART_FIXED_MIN);
+   double ppx  = (pMax - pMin) / h;
+   double tol  = ppx * (double)InpObjPixTol;
+   int    ptol = InpObjPixTol;
+
+   int total = ObjectsTotal(0);
+   for(int i = 0; i < total; i++)
+     {
+      string nm = ObjectName(0, i);
+      if((bool)ObjectGetInteger(0, nm, OBJPROP_HIDDEN)) continue; // skip invisible
+
+      ENUM_OBJECT ot = (ENUM_OBJECT)ObjectGetInteger(0, nm, OBJPROP_TYPE);
+
+      //--- Horizontal line (SL, TP, support, resistance, any hline)
+      if(ot == OBJ_HLINE)
+        {
+         if(MathAbs(p - ObjectGetDouble(0, nm, OBJPROP_PRICE)) <= tol)
+            return true;
+        }
+
+      //--- Vertical line
+      else if(ot == OBJ_VLINE)
+        {
+         datetime lt = (datetime)ObjectGetInteger(0, nm, OBJPROP_TIME, 0);
+         int ox, oy;
+         if(ChartTimePriceToXY(0, 0, lt, p, ox, oy) && MathAbs(mx - ox) <= ptol)
+            return true;
+        }
+
+      //--- Trend, ray, channel, regression, pitchfork
+      else if(ot == OBJ_TREND      || ot == OBJ_TRENDBYANGLE ||
+              ot == OBJ_CHANNEL    || ot == OBJ_STDDEVCHANNEL ||
+              ot == OBJ_REGRESSION || ot == OBJ_PITCHFORK)
+        {
+         double p1 = ObjectGetDouble(0, nm, OBJPROP_PRICE, 0);
+         double p2 = ObjectGetDouble(0, nm, OBJPROP_PRICE, 1);
+         if(MathAbs(p - p1) <= tol || MathAbs(p - p2) <= tol)
+            return true;
+        }
+
+      //--- Rectangle — all four borders
+      else if(ot == OBJ_RECTANGLE)
+        {
+         double p1  = ObjectGetDouble(0, nm, OBJPROP_PRICE, 0);
+         double p2  = ObjectGetDouble(0, nm, OBJPROP_PRICE, 1);
+         double pHi = MathMax(p1, p2);
+         double pLo = MathMin(p1, p2);
+         // Top / bottom borders
+         if(MathAbs(p - pHi) <= tol || MathAbs(p - pLo) <= tol)
+            return true;
+         // Left / right borders (mouse inside price band of rect)
+         if(p > pLo - tol && p < pHi + tol)
+           {
+            datetime t1 = (datetime)ObjectGetInteger(0, nm, OBJPROP_TIME, 0);
+            datetime t2 = (datetime)ObjectGetInteger(0, nm, OBJPROP_TIME, 1);
+            int x1, y1, x2, y2;
+            if(ChartTimePriceToXY(0, 0, t1, p, x1, y1) &&
+               ChartTimePriceToXY(0, 0, t2, p, x2, y2))
+              {
+               if(MathAbs(mx - x1) <= ptol || MathAbs(mx - x2) <= ptol)
+                  return true;
+              }
+           }
+        }
+
+      //--- Arrow / buy-sell marker
+      else if(ot == OBJ_ARROW || ot == OBJ_ARROW_BUY || ot == OBJ_ARROW_SELL)
+        {
+         double   lp = ObjectGetDouble(0, nm, OBJPROP_PRICE, 0);
+         datetime lt = (datetime)ObjectGetInteger(0, nm, OBJPROP_TIME, 0);
+         int ox, oy;
+         if(ChartTimePriceToXY(0, 0, lt, lp, ox, oy))
+            if(MathAbs(mx - ox) <= ptol + 4 && MathAbs(my - oy) <= ptol + 4)
+               return true;
+        }
+
+      //--- Fibonacci tools
+      else if(ot == OBJ_FIBO    || ot == OBJ_FIBOFAN  ||
+              ot == OBJ_FIBOARC || ot == OBJ_FIBOCHANNEL ||
+              ot == OBJ_EXPANSION)
+        {
+         double p1 = ObjectGetDouble(0, nm, OBJPROP_PRICE, 0);
+         double p2 = ObjectGetDouble(0, nm, OBJPROP_PRICE, 1);
+         if(MathAbs(p - p1) <= tol || MathAbs(p - p2) <= tol)
+            return true;
+        }
+
+      //--- Text anchored to price
+      else if(ot == OBJ_TEXT)
+        {
+         if(MathAbs(p - ObjectGetDouble(0, nm, OBJPROP_PRICE, 0)) <= tol * 2)
+            return true;
+        }
+     }
+   return false;
+  }
+
+//+------------------------------------------------------------------+
+// LAYER 3: Reverse every chart movement made in this drag session
+//+------------------------------------------------------------------+
+void RevertDragMovement()
+  {
+   if(steps_taken != 0)
+     {
+      ChartNavigate(0, CHART_CURRENT_POS, -steps_taken);
+      steps_taken = 0;
+      acc_x = 0.0;
+     }
+   if(MathAbs(shift_taken) > 0.0)
+     {
+      double pMax = ChartGetDouble(0, CHART_FIXED_MAX);
+      double pMin = ChartGetDouble(0, CHART_FIXED_MIN);
+      ChartSetDouble(0, CHART_FIXED_MAX, pMax - shift_taken);
+      ChartSetDouble(0, CHART_FIXED_MIN, pMin - shift_taken);
+      shift_taken = 0.0;
+     }
+   ChartRedraw(0);
+  }
+
+//+------------------------------------------------------------------+
+void OnChartEvent(const int id,
+                  const long   &lparam,
+                  const double &dparam,
+                  const string &sparam)
+  {
+   //--- X key: toggle modes
+   if(id == CHARTEVENT_KEYDOWN && lparam == 88)
+     {
+      custom_active = !custom_active;
+      if(custom_active) EnableCustomMode();
+      else              DisableCustomMode();
+      return;
+     }
+
+   if(!custom_active) return;
+
+   //===================================================================
+   // LAYER 3 TRIGGER — an object is confirmed moving
+   // Lock chart immediately + undo any movement already applied.
+   //===================================================================
+   if(id == CHARTEVENT_OBJECT_DRAG)
+     {
+      if(drag_clean)
+        {
+         drag_clean = false;
+         RevertDragMovement();
+        }
+      return;
+     }
+
+   //===================================================================
+   // MOUSE MOVE
+   //===================================================================
+   if(id == CHARTEVENT_MOUSE_MOVE)
+     {
+      int x     = (int)lparam;
+      int y     = (int)dparam;
+      int click = (int)sparam;
+
+      // Always track cursor position (used for zoom anchoring)
+      cur_mouse_x = x;
+      cur_mouse_y = y;
+
+      //--- Mouse released
+      if(click == 0)
+        {
+         is_dragging = false;
+         drag_clean  = false;
+         steps_taken = 0;
+         shift_taken = 0.0;
+         dead_px     = 0;
+         acc_x       = 0.0;
+         return;
+        }
+
+      //--- Left button held
+      if(click == 1)
+        {
+         if(!is_dragging)
+           {
+            //--- DRAG START
+            is_dragging  = true;
+            last_drag_x  = x;
+            last_drag_y  = y;
+            acc_x        = 0.0;
+            steps_taken  = 0;
+            shift_taken  = 0.0;
+            dead_px      = 0;
+            // LAYER 1: proximity scan
+            drag_clean = !IsMouseNearObject(x, y);
+           }
+         else if(drag_clean)
+           {
+            int dx = x - last_drag_x;
+            int dy = y - last_drag_y;
+
+            //--- LAYER 2: Dead-zone buffer
+            // Accumulate pixels moved — don't act yet.
+            // Gives CHARTEVENT_OBJECT_DRAG time to fire before chart moves.
+            if(dead_px < InpDeadZone)
+              {
+               dead_px += (int)(MathSqrt((double)(dx * dx + dy * dy)) + 0.5);
+               last_drag_x = x;
+               last_drag_y = y;
+               return;
+              }
+
+            //--- DRAG MOVE — actually move the chart
+
+            // Horizontal: scroll bars
+            if(dx != 0)
+              {
+               double p_per_b = (double)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS) /
+                                (double)ChartGetInteger(0, CHART_VISIBLE_BARS);
+               acc_x += dx;
+               if(MathAbs(acc_x) >= p_per_b)
+                 {
+                  int s = (int)((acc_x / p_per_b) * -1.0);
+                  ChartNavigate(0, CHART_CURRENT_POS, s);
+                  steps_taken += s;
+                  acc_x += (s * p_per_b);
+                 }
+              }
+
+            // Vertical: shift price axis
+            if(dy != 0)
+              {
+               double pMax  = ChartGetDouble(0, CHART_FIXED_MAX);
+               double pMin  = ChartGetDouble(0, CHART_FIXED_MIN);
+               double shift = dy * ((pMax - pMin) /
+                              (double)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS));
+               ChartSetDouble(0, CHART_FIXED_MAX, pMax + shift);
+               ChartSetDouble(0, CHART_FIXED_MIN, pMin + shift);
+               shift_taken += shift;
+              }
+
+            last_drag_x = x;
+            last_drag_y = y;
+            ChartRedraw(0);
+           }
+         // drag_clean == false → MT5 handles object drag natively, chart untouched
+        }
+     }
+
+   //===================================================================
+   // SCROLL WHEEL — Smooth zoom anchored to mouse cursor price
+   //
+   // Key design (why no wobble):
+   //   1. We do NOT change CHART_SCALE — that integer-stepped property
+   //      was causing the jumpy/wobble feel. Removed entirely.
+   //   2. We zoom by resizing CHART_FIXED_MAX/MIN only (continuous float).
+   //   3. The anchor point is the price under the mouse cursor, so that
+   //      price stays pinned while the range expands/contracts around it —
+   //      exactly how TradingView behaves.
+   //===================================================================
+   if(id == CHARTEVENT_MOUSE_WHEEL)
+     {
+      double spd  = MathMax(0.01, MathMin(0.30, InpZoomSpeed));
+      bool zoom_in = (dparam > 0);
+
+      double h    = (double)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+      double pMax = ChartGetDouble(0, CHART_FIXED_MAX);
+      double pMin = ChartGetDouble(0, CHART_FIXED_MIN);
+      double rng  = pMax - pMin;
+
+      // Price under the mouse cursor (anchor — stays fixed through zoom)
+      double frac         = (h > 0) ? ((double)cur_mouse_y / h) : 0.5;
+      frac                = MathMax(0.0, MathMin(1.0, frac));
+      double anchor_price = pMax - frac * rng;
+
+      // New range: shrink for zoom-in, expand for zoom-out
+      double new_rng = zoom_in ? rng * (1.0 - spd) : rng * (1.0 + spd);
+
+      // Redistribute range so anchor_price stays at the same screen position
+      double new_pMax = anchor_price + frac         * new_rng;
+      double new_pMin = anchor_price - (1.0 - frac) * new_rng;
+
+      ChartSetDouble(0, CHART_FIXED_MAX, new_pMax);
+      ChartSetDouble(0, CHART_FIXED_MIN, new_pMin);
+      ChartRedraw(0);
+     }
+  }
+
+//+------------------------------------------------------------------+
+int OnCalculate(const int rates_total,
+                const int prev_calculated,
+                const int begin,
+                const double &price[])
+  {
+   return(rates_total);
+  }
+//+------------------------------------------------------------------+
