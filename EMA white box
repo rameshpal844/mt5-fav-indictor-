@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
-//|                                         EMA_TVPanel_v8.mq5      |
-//|   EMA Panel — Light Theme  v8.0                                 |
-//|   Removed: rectangle tool, draw mode, undo/redo, gear icon      |
+//|                                                EMA_TVPanel_v8.mq5|
+//|   EMA Panel — Light Theme  v8.0                                  |
+//|   Fixed: Invisible memory string to hide "ghost numbers"         |
 //+------------------------------------------------------------------+
 #property copyright   "Ramesh"
 #property version     "8.00"
@@ -11,25 +11,25 @@
 
 #property indicator_label1  "EMA 8"
 #property indicator_type1   DRAW_LINE
-#property indicator_color1  clrDodgerBlue
+#property indicator_color1  clrBlack
 #property indicator_style1  STYLE_SOLID
-#property indicator_width1  2
+#property indicator_width1  1
 
 #property indicator_label2  "EMA 21"
 #property indicator_type2   DRAW_LINE
-#property indicator_color2  clrForestGreen
+#property indicator_color2  clrBlue
 #property indicator_style2  STYLE_SOLID
 #property indicator_width2  2
 
 #property indicator_label3  "EMA 50"
 #property indicator_type3   DRAW_LINE
-#property indicator_color3  clrOrangeRed
+#property indicator_color3  clrGreen
 #property indicator_style3  STYLE_SOLID
 #property indicator_width3  2
 
 #property indicator_label4  "EMA 200"
 #property indicator_type4   DRAW_LINE
-#property indicator_color4  clrCrimson
+#property indicator_color4  clrRed
 #property indicator_style4  STYLE_SOLID
 #property indicator_width4  2
 
@@ -40,10 +40,10 @@ input int   InpP2 = 21;
 input int   InpP3 = 50;
 input int   InpP4 = 200;
 input group "=== EMA Colors ==="
-input color InpC1 = clrDodgerBlue;
-input color InpC2 = clrForestGreen;
-input color InpC3 = clrOrangeRed;
-input color InpC4 = clrCrimson;
+input color InpC1 = clrBlack;
+input color InpC2 = clrBlue;
+input color InpC3 = clrGreen;
+input color InpC4 = clrRed;
 input group "=== Panel ==="
 input int   InpDefX = 15;
 input int   InpDefY = 180;
@@ -70,7 +70,7 @@ double Buf1[], Buf2[], Buf3[], Buf4[];
 #define C_MUT     C'115,125,155'
 
 color SWATCH[8] = {
-   clrDodgerBlue, clrForestGreen, clrOrangeRed, clrCrimson,
+   clrBlack, clrBlue, clrGreen, clrRed,
    clrGold, clrTeal, clrMediumOrchid, C'80,80,80'
 };
 
@@ -117,28 +117,33 @@ int OnInit()
 {
    gPer[0]=InpP1; gPer[1]=InpP2; gPer[2]=InpP3; gPer[3]=InpP4;
    gClr[0]=InpC1; gClr[1]=InpC2; gClr[2]=InpC3; gClr[3]=InpC4;
+   gWid[0]=1;     gWid[1]=2;     gWid[2]=2;     gWid[3]=2;
+   
    for(int i=0;i<N;i++)
    {
-      gVis[i]=(i==1||i==3); gEdit[i]=false; gWid[i]=2;
+      gVis[i]=true; gEdit[i]=false;
       gLbl[i]="EMA "+IntegerToString(gPer[i]);
       gCR[i]=(int)((gClr[i]>>16)&0xFF);
       gCG[i]=(int)((gClr[i]>>8) &0xFF);
       gCB[i]=(int)( gClr[i]     &0xFF);
    }
+   
    SetIndexBuffer(0,Buf1,INDICATOR_DATA);
    SetIndexBuffer(1,Buf2,INDICATOR_DATA);
    SetIndexBuffer(2,Buf3,INDICATOR_DATA);
    SetIndexBuffer(3,Buf4,INDICATOR_DATA);
+   
+   LoadState(); // Loads your custom saved colors/sizes from hidden chart object
+   
    for(int i=0;i<N;i++)
    {
       PlotIndexSetString (i,PLOT_LABEL,      gLbl[i]);
       PlotIndexSetInteger(i,PLOT_LINE_COLOR, gClr[i]);
       PlotIndexSetInteger(i,PLOT_LINE_WIDTH, gWid[i]);
       PlotIndexSetInteger(i,PLOT_DRAW_BEGIN, gPer[i]);
+      PlotIndexSetInteger(i,PLOT_DRAW_TYPE,  gVis[i]?DRAW_LINE:DRAW_NONE);
    }
-   LoadState();
-   for(int i=0;i<N;i++)
-      PlotIndexSetInteger(i,PLOT_DRAW_TYPE,gVis[i]?DRAW_LINE:DRAW_NONE);
+   
    ChartSetInteger(0,CHART_EVENT_MOUSE_MOVE,true);
    BuildPanel();
    return INIT_SUCCEEDED;
@@ -148,6 +153,12 @@ void OnDeinit(const int reason)
 {
    ChartSetInteger(0,CHART_EVENT_MOUSE_MOVE,false);
    ObjectsDeleteAll(0,PFX);
+   
+   if(reason == REASON_REMOVE || reason == REASON_PARAMETERS)
+   {
+      ObjectDelete(0, StateName());
+   }
+   
    ChartRedraw();
 }
 
@@ -184,7 +195,6 @@ void ApplyPeriod(int i)
 //+──────────────────────────────────────────────────────────────────+
 void OnChartEvent(const int id,const long &lp,const double &dp,const string &sp)
 {
-   //═══════════════════ MOUSE MOVE ════════════════════════════════
    if(id==CHARTEVENT_MOUSE_MOVE)
    {
       int mx=(int)lp, my=(int)dp;
@@ -195,8 +205,6 @@ void OnChartEvent(const int id,const long &lp,const double &dp,const string &sp)
          if(gDragging){gDragging=false;SaveState();}
          return;
       }
-
-      // Panel drag (header)
       if(!gDragging)
       {
          int curW=gCollapsed?26:PNL_W;
@@ -214,7 +222,6 @@ void OnChartEvent(const int id,const long &lp,const double &dp,const string &sp)
       return;
    }
 
-   //═══════════════════ ENDEDIT — text boxes ══════════════════════
    if(id==CHARTEVENT_OBJECT_ENDEDIT)
    {
       for(int i=0;i<N;i++)
@@ -229,25 +236,21 @@ void OnChartEvent(const int id,const long &lp,const double &dp,const string &sp)
          for(int c=0;c<3;c++)
             if(sp==PFX+"Ed"+rgb[c]+IntegerToString(i))
             {
-               int v=MathMax(0,MathMin(255,(int)StringToInteger(
-                             ObjectGetString(0,sp,OBJPROP_TEXT))));
+               int v=MathMax(0,MathMin(255,(int)StringToInteger(ObjectGetString(0,sp,OBJPROP_TEXT))));
                if(c==0)gCR[i]=v; if(c==1)gCG[i]=v; if(c==2)gCB[i]=v;
                BuildPanel();return;
             }
       }
    }
 
-   //═══════════════════ OBJECT CLICK — buttons ════════════════════
    if(id!=CHARTEVENT_OBJECT_CLICK) return;
 
-   //── Collapse ───────────────────────────────────────────────────
    if(sp==PFX+"Col")
    {
       gCollapsed=!gCollapsed;
       SaveState();BuildPanel();return;
    }
 
-   //── EMA row buttons ────────────────────────────────────────────
    for(int i=0;i<N;i++)
    {
       if(sp==PFX+"Eye"+IntegerToString(i))
@@ -315,36 +318,27 @@ void BuildPanel()
    int bodyH = gCollapsed?0:BodyH();
    int totH  = HDR_H+bodyH;
 
-   // Card
    Rect(PFX+"Shd",x+2,y+2,curW,totH,C'215,220,235',C'215,220,235');
    Rect(PFX+"BG", x,  y,  curW,totH,C_PANEL,C_BRD);
    Rect(PFX+"HDR",x,  y,  curW,HDR_H,C_HDR,  C_BRD);
-
-   // Collapse arrow
    Btn(PFX+"Col",x+3,y+4,18,18,gCollapsed?"▶":"▼",C_BTN,C_TXT,C_BRD);
 
    if(!gCollapsed)
    {
-      // Header bottom line
       Rect(PFX+"HL",x,y+HDR_H,PNL_W,1,C_BRD,C_BRD);
-
-      // ── EMA ROWS ──────────────────────────────────────────────
       for(int i=0;i<N;i++) DrawRow(i);
    }
-
    ChartRedraw();
 }
 
-//────────────────────────────────────────────────────────────────────
 void DrawRow(int i)
 {
    int x  = gPanX;
    int ry = RowY(i);
    int rh = RowH(i);
-   // Eye button sits at far right; no gear icon
    int ex = x+PNL_W-26;
-
    color bg=(i%2==1)?C_ROW2:C_PANEL;
+   
    Rect(PFX+"RBG"+IntegerToString(i),x,ry,PNL_W,rh,bg,bg);
    if(i<N-1) Rect(PFX+"RDV"+IntegerToString(i),x,ry+rh-1,PNL_W,1,C_BRD,C_BRD);
 
@@ -357,45 +351,36 @@ void DrawRow(int i)
    if(!gEdit[i])
    {
       Lbl(PFX+"Sub"+IntegerToString(i),x+20,ry+16,
-          "P:"+IntegerToString(gPer[i])+" W:"+IntegerToString(gWid[i]),
-          "Arial",7,C_MUT);
+          "P:"+IntegerToString(gPer[i])+" W:"+IntegerToString(gWid[i]),"Arial",7,C_MUT);
    }
    else
    {
-      // ── Period ─────────────────────────────────────────────
       int py=ry+18;
       Lbl(PFX+"PL"+IntegerToString(i),x+6,py,"Per","Arial",7,C_MUT);
       Btn(PFX+"Minus"+IntegerToString(i),x+28,py-2,14,13,"-",C_BTN,C_TXT,C_BRD);
       Edit(PFX+"Ed"+IntegerToString(i),x+44,py-2,32,13,IntegerToString(gPer[i]));
       Btn(PFX+"Plus" +IntegerToString(i),x+78,py-2,14,13,"+",C_BTN,C_TXT,C_BRD);
 
-      // ── Width ──────────────────────────────────────────────
       int wy=ry+35;
       Lbl(PFX+"WL"+IntegerToString(i),x+6,wy,"Wid","Arial",7,C_MUT);
       for(int w=1;w<=4;w++)
       {
          bool cur=(gWid[i]==w);
-         Btn(PFX+"Sz"+IntegerToString(i)+"_"+IntegerToString(w),
-             x+28+(w-1)*22,wy-2,20,13,
-             IntegerToString(w),cur?C_BTN_A:C_BTN,
-             cur?clrWhite:C_TXT,cur?C'40,90,200':C_BRD);
+         Btn(PFX+"Sz"+IntegerToString(i)+"_"+IntegerToString(w),x+28+(w-1)*22,wy-2,20,13,
+             IntegerToString(w),cur?C_BTN_A:C_BTN,cur?clrWhite:C_TXT,cur?C'40,90,200':C_BRD);
          ObjectSetInteger(0,PFX+"Sz"+IntegerToString(i)+"_"+IntegerToString(w),OBJPROP_FONTSIZE,8);
       }
 
-      // ── Colour swatches ────────────────────────────────────
       int cy=ry+52;
       Lbl(PFX+"CL2"+IntegerToString(i),x+6,cy,"Clr","Arial",7,C_MUT);
       for(int c=0;c<8;c++)
       {
          bool cur=(gClr[i]==SWATCH[c]);
-         Btn(PFX+"Clr"+IntegerToString(i)+"_"+IntegerToString(c),
-             x+28+c*20,cy-2,17,13,cur?"✓":" ",
-             SWATCH[c],cur?clrBlack:SWATCH[c],
-             cur?C_TXT:DimC(SWATCH[c]));
+         Btn(PFX+"Clr"+IntegerToString(i)+"_"+IntegerToString(c),x+28+c*20,cy-2,17,13,cur?"✓":" ",
+             SWATCH[c],cur?clrBlack:SWATCH[c],cur?C_TXT:DimC(SWATCH[c]));
          ObjectSetInteger(0,PFX+"Clr"+IntegerToString(i)+"_"+IntegerToString(c),OBJPROP_FONTSIZE,8);
       }
 
-      // ── RGB ────────────────────────────────────────────────
       int ry2=ry+68;
       Rect(PFX+"RGBD"+IntegerToString(i),x+4,ry2-2,PNL_W-8,1,C_BRD,C_BRD);
       string RGB2[3]={"R","G","B"};
@@ -413,90 +398,87 @@ void DrawRow(int i)
       int ay=ry+86;
       color prev=(color)((gCR[i]<<16)|(gCG[i]<<8)|gCB[i]);
       Rect(PFX+"Pv"+IntegerToString(i),x+6,ay,20,12,prev,C_TXT);
-      Btn(PFX+"ApplyClr"+IntegerToString(i),x+30,ay,PNL_W-36,12,
-          "Apply Custom",C_BTN_A,clrWhite,C'40,90,200');
+      Btn(PFX+"ApplyClr"+IntegerToString(i),x+30,ay,PNL_W-36,12,"Apply Custom",C_BTN_A,clrWhite,C'40,90,200');
       ObjectSetInteger(0,PFX+"ApplyClr"+IntegerToString(i),OBJPROP_FONTSIZE,7);
    }
 
-   // Eye toggle — now at far right (no gear beside it)
-   Btn(PFX+"Eye"+IntegerToString(i),ex,ry+4,22,18,
-       gVis[i]?"◉":"◎",C_BTN,gVis[i]?C_TXT:C_MUT,C_BRD);
+   Btn(PFX+"Eye"+IntegerToString(i),ex,ry+4,22,18,gVis[i]?"◉":"◎",C_BTN,gVis[i]?C_TXT:C_MUT,C_BRD);
 
-   // ── Clicking the label/dot area opens the edit panel ──────────
-   // Repurpose "Gear" name so existing OnChartEvent handler still works
-   color gbc=gEdit[i]?C_BTN_A:C_BTN;
-   color gfc=gEdit[i]?clrWhite:C_MUT;
-   // Hidden zero-size trigger (keeps handler logic intact, no visible icon)
    ObjectCreate(0,PFX+"Gear"+IntegerToString(i),OBJ_BUTTON,0,0,0);
-   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_CORNER,     CORNER_LEFT_UPPER);
-   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_XDISTANCE,  x);
-   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_YDISTANCE,  ry);
-   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_XSIZE,      ex-x);  // spans name area
-   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_YSIZE,      rh);
-   ObjectSetString (0,PFX+"Gear"+IntegerToString(i),OBJPROP_TEXT,       "");
-   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_BGCOLOR,    bg);
-   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_COLOR,      bg);
+   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_XDISTANCE,x);
+   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_YDISTANCE,ry);
+   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_XSIZE,ex-x); 
+   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_YSIZE,rh);
+   ObjectSetString (0,PFX+"Gear"+IntegerToString(i),OBJPROP_TEXT,"");
+   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_BGCOLOR,bg);
+   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_COLOR,bg);
    ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_BORDER_COLOR,bg);
-   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_BACK,       false);
-   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_HIDDEN,     true);
-   // Re-draw dot/label ON TOP of the invisible button
+   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_BACK,false);
+   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,PFX+"Gear"+IntegerToString(i),OBJPROP_HIDDEN,true);
+   
    Lbl(PFX+"Dot"+IntegerToString(i)+"2",x+6, ry+4, "●","Arial",11,dotC);
    Lbl(PFX+"Nm" +IntegerToString(i)+"2",x+20,ry+3, gLbl[i],"Arial Bold",9,lblC);
-   if(!gEdit[i])
-      Lbl(PFX+"Sub"+IntegerToString(i)+"2",x+20,ry+16,
-          "P:"+IntegerToString(gPer[i])+" W:"+IntegerToString(gWid[i]),
-          "Arial",7,C_MUT);
+   if(!gEdit[i]) Lbl(PFX+"Sub"+IntegerToString(i)+"2",x+20,ry+16,"P:"+IntegerToString(gPer[i])+" W:"+IntegerToString(gWid[i]),"Arial",7,C_MUT);
 }
 
 //════════════════════════════════════════════════════════════════════
-//  GLOBALVARIABLE PERSISTENCE
+//  CHART-SPECIFIC MEMORY SYSTEM (FIXED GHOST TEXT)
 //════════════════════════════════════════════════════════════════════
-string GK(){ return "EMATV8_GLOBAL"; }
+string StateName() { return "EMV8_STATE_MEM"; }
 
 void SaveState()
 {
-   GlobalVariableSet(GK()+"_x",  (double)gPanX);
-   GlobalVariableSet(GK()+"_y",  (double)gPanY);
-   GlobalVariableSet(GK()+"_col",(double)(gCollapsed?1:0));
+   string s = IntegerToString(gPanX)+","+IntegerToString(gPanY)+","+IntegerToString(gCollapsed?1:0);
    for(int i=0;i<N;i++)
    {
-      GlobalVariableSet(GK()+"_v"+IntegerToString(i),(double)(gVis[i]?1:0));
-      GlobalVariableSet(GK()+"_p"+IntegerToString(i),(double)gPer[i]);
-      GlobalVariableSet(GK()+"_c"+IntegerToString(i),(double)gClr[i]);
-      GlobalVariableSet(GK()+"_w"+IntegerToString(i),(double)gWid[i]);
-      GlobalVariableSet(GK()+"_r"+IntegerToString(i),(double)gCR[i]);
-      GlobalVariableSet(GK()+"_g"+IntegerToString(i),(double)gCG[i]);
-      GlobalVariableSet(GK()+"_b"+IntegerToString(i),(double)gCB[i]);
+      s+=","+IntegerToString(gVis[i]?1:0)+
+         ","+IntegerToString(gPer[i])+
+         ","+IntegerToString(gClr[i])+
+         ","+IntegerToString(gWid[i])+
+         ","+IntegerToString(gCR[i])+
+         ","+IntegerToString(gCG[i])+
+         ","+IntegerToString(gCB[i]);
    }
+   if(ObjectFind(0,StateName())<0)
+   {
+      ObjectCreate(0,StateName(),OBJ_LABEL,0,0,0);
+      ObjectSetInteger(0,StateName(),OBJPROP_HIDDEN,true);
+      ObjectSetInteger(0,StateName(),OBJPROP_SELECTABLE,false);
+      // Make text completely transparent
+      ObjectSetInteger(0,StateName(),OBJPROP_COLOR,clrNONE); 
+      // Push object off the viewable screen just to be safe
+      ObjectSetInteger(0,StateName(),OBJPROP_XDISTANCE, -1000); 
+      ObjectSetInteger(0,StateName(),OBJPROP_YDISTANCE, -1000);
+   }
+   ObjectSetString(0,StateName(),OBJPROP_TEXT,s);
 }
 
 void LoadState()
 {
-   gPanX     =GlobalVariableCheck(GK()+"_x")  ?(int)GlobalVariableGet(GK()+"_x")  :InpDefX;
-   gPanY     =GlobalVariableCheck(GK()+"_y")  ?(int)GlobalVariableGet(GK()+"_y")  :InpDefY;
-   gCollapsed=GlobalVariableCheck(GK()+"_col")?GlobalVariableGet(GK()+"_col")>0.5 :true;
-   for(int i=0;i<N;i++)
+   if(ObjectFind(0,StateName())>=0)
    {
-      if(GlobalVariableCheck(GK()+"_v"+IntegerToString(i)))
-         gVis[i]=GlobalVariableGet(GK()+"_v"+IntegerToString(i))>0.5;
-      if(GlobalVariableCheck(GK()+"_p"+IntegerToString(i)))
-         gPer[i]=(int)GlobalVariableGet(GK()+"_p"+IntegerToString(i));
-      if(GlobalVariableCheck(GK()+"_c"+IntegerToString(i)))
-         gClr[i]=(color)(int)GlobalVariableGet(GK()+"_c"+IntegerToString(i));
-      if(GlobalVariableCheck(GK()+"_w"+IntegerToString(i)))
-         gWid[i]=(int)GlobalVariableGet(GK()+"_w"+IntegerToString(i));
-      gCR[i]=(int)((gClr[i]>>16)&0xFF);
-      gCG[i]=(int)((gClr[i]>>8) &0xFF);
-      gCB[i]=(int)( gClr[i]     &0xFF);
-      if(GlobalVariableCheck(GK()+"_r"+IntegerToString(i)))gCR[i]=(int)GlobalVariableGet(GK()+"_r"+IntegerToString(i));
-      if(GlobalVariableCheck(GK()+"_g"+IntegerToString(i)))gCG[i]=(int)GlobalVariableGet(GK()+"_g"+IntegerToString(i));
-      if(GlobalVariableCheck(GK()+"_b"+IntegerToString(i)))gCB[i]=(int)GlobalVariableGet(GK()+"_b"+IntegerToString(i));
-      gLbl[i]="EMA "+IntegerToString(gPer[i]);
-      PlotIndexSetString (i,PLOT_LABEL,      gLbl[i]);
-      PlotIndexSetInteger(i,PLOT_LINE_COLOR, gClr[i]);
-      PlotIndexSetInteger(i,PLOT_LINE_WIDTH, gWid[i]);
-      PlotIndexSetInteger(i,PLOT_DRAW_BEGIN, gPer[i]);
+      string s = ObjectGetString(0,StateName(),OBJPROP_TEXT);
+      string arr[];
+      if(StringSplit(s,',',arr) >= 3+N*7)
+      {
+         gPanX = (int)StringToInteger(arr[0]);
+         gPanY = (int)StringToInteger(arr[1]);
+         gCollapsed = StringToInteger(arr[2])>0;
+         int idx=3;
+         for(int i=0;i<N;i++)
+         {
+            gVis[i] = StringToInteger(arr[idx++])>0;
+            gPer[i] = (int)StringToInteger(arr[idx++]);
+            gClr[i] = (color)StringToInteger(arr[idx++]);
+            gWid[i] = (int)StringToInteger(arr[idx++]);
+            gCR[i]  = (int)StringToInteger(arr[idx++]);
+            gCG[i]  = (int)StringToInteger(arr[idx++]);
+            gCB[i]  = (int)StringToInteger(arr[idx++]);
+            gLbl[i] = "EMA "+IntegerToString(gPer[i]);
+         }
+      }
    }
 }
 
@@ -506,70 +488,49 @@ void LoadState()
 void Rect(string n,int x,int y,int w,int h,color bg,color brd)
 {
    ObjectCreate(0,n,OBJ_RECTANGLE_LABEL,0,0,0);
-   ObjectSetInteger(0,n,OBJPROP_CORNER,      CORNER_LEFT_UPPER);
-   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,   x);
-   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,   y);
-   ObjectSetInteger(0,n,OBJPROP_XSIZE,       w);
-   ObjectSetInteger(0,n,OBJPROP_YSIZE,       h);
-   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,     bg);
-   ObjectSetInteger(0,n,OBJPROP_COLOR,       brd);
-   ObjectSetInteger(0,n,OBJPROP_BORDER_TYPE, BORDER_FLAT);
-   ObjectSetInteger(0,n,OBJPROP_BACK,        false);
-   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,  false);
-   ObjectSetInteger(0,n,OBJPROP_HIDDEN,      true);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x); ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,w);     ObjectSetInteger(0,n,OBJPROP_YSIZE,h);
+   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,bg);  ObjectSetInteger(0,n,OBJPROP_COLOR,brd);
+   ObjectSetInteger(0,n,OBJPROP_BORDER_TYPE,BORDER_FLAT);
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);  ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_HIDDEN,true);
 }
 
-void Btn(string n,int x,int y,int w,int h,
-         string txt,color bg,color fg,color brd)
+void Btn(string n,int x,int y,int w,int h,string txt,color bg,color fg,color brd)
 {
    ObjectCreate(0,n,OBJ_BUTTON,0,0,0);
-   ObjectSetInteger(0,n,OBJPROP_CORNER,       CORNER_LEFT_UPPER);
-   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,    x);
-   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,    y);
-   ObjectSetInteger(0,n,OBJPROP_XSIZE,        w);
-   ObjectSetInteger(0,n,OBJPROP_YSIZE,        h);
-   ObjectSetString (0,n,OBJPROP_TEXT,         txt);
-   ObjectSetString (0,n,OBJPROP_FONT,         "Segoe UI");
-   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,     8);
-   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,      bg);
-   ObjectSetInteger(0,n,OBJPROP_COLOR,        fg);
-   ObjectSetInteger(0,n,OBJPROP_BORDER_COLOR, brd);
-   ObjectSetInteger(0,n,OBJPROP_BACK,         false);
-   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,   false);
-   ObjectSetInteger(0,n,OBJPROP_HIDDEN,       true);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x); ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,w);     ObjectSetInteger(0,n,OBJPROP_YSIZE,h);
+   ObjectSetString (0,n,OBJPROP_TEXT,txt);    ObjectSetString (0,n,OBJPROP_FONT,"Segoe UI");
+   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,8);  ObjectSetInteger(0,n,OBJPROP_BGCOLOR,bg);
+   ObjectSetInteger(0,n,OBJPROP_COLOR,fg);    ObjectSetInteger(0,n,OBJPROP_BORDER_COLOR,brd);
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);  ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_HIDDEN,true);
 }
 
 void Lbl(string n,int x,int y,string txt,string font,int sz,color clr)
 {
    ObjectCreate(0,n,OBJ_LABEL,0,0,0);
-   ObjectSetInteger(0,n,OBJPROP_CORNER,     CORNER_LEFT_UPPER);
-   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,  x);
-   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,  y);
-   ObjectSetString (0,n,OBJPROP_TEXT,       txt);
-   ObjectSetString (0,n,OBJPROP_FONT,       font);
-   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,   sz);
-   ObjectSetInteger(0,n,OBJPROP_COLOR,      clr);
-   ObjectSetInteger(0,n,OBJPROP_BACK,       false);
-   ObjectSetInteger(0,n,OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0,n,OBJPROP_HIDDEN,     true);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x); ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetString (0,n,OBJPROP_TEXT,txt);    ObjectSetString (0,n,OBJPROP_FONT,font);
+   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,sz); ObjectSetInteger(0,n,OBJPROP_COLOR,clr);
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);  ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_HIDDEN,true);
 }
 
 void Edit(string n,int x,int y,int w,int h,string txt)
 {
    ObjectCreate(0,n,OBJ_EDIT,0,0,0);
-   ObjectSetInteger(0,n,OBJPROP_CORNER,       CORNER_LEFT_UPPER);
-   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,    x);
-   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,    y);
-   ObjectSetInteger(0,n,OBJPROP_XSIZE,        w);
-   ObjectSetInteger(0,n,OBJPROP_YSIZE,        h);
-   ObjectSetString (0,n,OBJPROP_TEXT,         txt);
-   ObjectSetString (0,n,OBJPROP_FONT,         "Arial Bold");
-   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,     8);
-   ObjectSetInteger(0,n,OBJPROP_COLOR,        C_TXT);
-   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,      clrWhite);
-   ObjectSetInteger(0,n,OBJPROP_BORDER_COLOR, C_BRD);
-   ObjectSetInteger(0,n,OBJPROP_BACK,         false);
-   ObjectSetInteger(0,n,OBJPROP_HIDDEN,       true);
-   ObjectSetInteger(0,n,OBJPROP_ALIGN,        ALIGN_CENTER);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x); ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,w);     ObjectSetInteger(0,n,OBJPROP_YSIZE,h);
+   ObjectSetString (0,n,OBJPROP_TEXT,txt);    ObjectSetString (0,n,OBJPROP_FONT,"Arial Bold");
+   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,8);  ObjectSetInteger(0,n,OBJPROP_COLOR,C_TXT);
+   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,clrWhite); ObjectSetInteger(0,n,OBJPROP_BORDER_COLOR,C_BRD);
+   ObjectSetInteger(0,n,OBJPROP_BACK,false);  ObjectSetInteger(0,n,OBJPROP_HIDDEN,true);
+   ObjectSetInteger(0,n,OBJPROP_ALIGN,ALIGN_CENTER);
 }
 //+------------------------------------------------------------------+
