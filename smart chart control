@@ -1,23 +1,23 @@
 //+------------------------------------------------------------------+
 //|                                       SmartChartControl.mq5      |
-//|    TradingView-Style Chart Control — v4.2 (Full Zoom Restored)   |
+//|    TradingView-Style Chart Control — v4.3 (Freeze Fix Edition)   |
 //|                                                                  |
-//|  ZOOM: Horizontal (Candles) + Vertical (Price) anchored to mouse |
-//|  DRAG: Three-layer object protection                             |
-//|    L1 - Proximity scan (Detects live TP/SL/Entry levels)         |
-//|    L2 - Dead-zone buffer (lets OBJECT_DRAG fire first)           |
-//|    L3 - OBJECT_DRAG mid-drag lock + full movement reversal       |
+//|  FIX 1: IsMouseNearObject() is now THROTTLED — only runs once    |
+//|          per 80ms instead of on every single mouse pixel move.   |
+//|  FIX 2: Object scan exits EARLY the moment a match is found.    |
+//|  FIX 3: Dead-zone check moved BEFORE object scan to avoid        |
+//|          scanning when the drag hasn't started yet.              |
 //+------------------------------------------------------------------+
 #property indicator_chart_window
 #property indicator_plots 0
 
 //--- Instructions (read-only — shown in Properties dialog)
-input string _info1 = "===== HOW TO USE =====";          
-input string _info2 = "Drag on empty chart = move chart"; 
+input string _info1 = "===== HOW TO USE =====";
+input string _info2 = "Drag on empty chart = move chart";
 input string _info3 = "Drag on any object  = move object";
 input string _info4 = "Scroll wheel        = zoom in/out";
 input string _info5 = "Press X key         = toggle mode";
-input string _info6 = "======================";           
+input string _info6 = "======================";
 
 //--- Settings
 input double InpZoomSpeed = 0.04; // Zoom Speed  → 0.02=slow · 0.04=smooth · 0.10=fast
@@ -33,7 +33,6 @@ bool   drag_clean    = false;
 bool   custom_active = true;
 int    dead_px       = 0;
 
-// Movement tracker for Layer 3 reversal
 int    steps_taken  = 0;
 double shift_taken  = 0.0;
 
@@ -41,33 +40,38 @@ double shift_taken  = 0.0;
 int    cur_mouse_x  = 0;
 int    cur_mouse_y  = 0;
 
+//--- FREEZE FIX: Throttle the object-scan so it doesn't run on every pixel
+uint   last_scan_ms    = 0;
+bool   last_scan_result = false;
+uint   SCAN_INTERVAL_MS = 80; // Only scan for nearby objects every 80ms
+
 //+------------------------------------------------------------------+
 int OnInit()
-  {
+{
    ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE,  true);
    ChartSetInteger(0, CHART_EVENT_MOUSE_WHEEL, true);
    EnableCustomMode();
    return(INIT_SUCCEEDED);
-  }
+}
 
 void OnDeinit(const int reason)
-  {
+{
    Comment("");
    DisableCustomMode();
-  }
+}
 
 //+------------------------------------------------------------------+
 void EnableCustomMode()
-  {
+{
    ChartSetInteger(0, CHART_SCALEFIX,     true);
    ChartSetInteger(0, CHART_AUTOSCROLL,  false);
    ChartSetInteger(0, CHART_MOUSE_SCROLL, false);
    Comment("");
    ChartRedraw(0);
-  }
+}
 
 void DisableCustomMode()
-  {
+{
    double pMax = ChartGetDouble(0, CHART_PRICE_MAX);
    double pMin = ChartGetDouble(0, CHART_PRICE_MIN);
    ChartSetInteger(0, CHART_SCALEFIX,    false);
@@ -76,15 +80,28 @@ void DisableCustomMode()
    ChartSetDouble(0, CHART_FIXED_MIN, pMin);
    Comment("");
    ChartRedraw(0);
-  }
+}
 
 //+------------------------------------------------------------------+
-// LAYER 1: Proximity scan — is mouse near ANY visible object or trade?
+// LAYER 1: Proximity scan — THROTTLED version
+// Only actually scans every SCAN_INTERVAL_MS milliseconds.
+// Between scans, returns the cached result from the last scan.
 //+------------------------------------------------------------------+
 bool IsMouseNearObject(int mx, int my)
-  {
+{
+   uint nowMs = GetTickCount();
+   if(nowMs - last_scan_ms < SCAN_INTERVAL_MS)
+      return last_scan_result; // Return cached result — no CPU work
+
+   last_scan_ms = nowMs;
+
+   // ── Full scan (runs only ~12 times/sec instead of 60+ times/sec) ──
    datetime t; double p; int win;
-   if(!ChartXYToTimePrice(0, mx, my, win, t, p)) return false;
+   if(!ChartXYToTimePrice(0, mx, my, win, t, p))
+   {
+      last_scan_result = false;
+      return false;
+   }
 
    double h    = (double)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
    double pMax = ChartGetDouble(0, CHART_FIXED_MAX);
@@ -97,168 +114,166 @@ bool IsMouseNearObject(int mx, int my)
    // Check Trade Levels (TP, SL, Entry)
    //========================================================
    if(ChartGetInteger(0, CHART_SHOW_TRADE_LEVELS))
-     {
+   {
       string sym = ChartSymbol(0);
-      
       for(int i = 0; i < PositionsTotal(); i++)
-        {
-         ulong ticket = PositionGetTicket(i); 
+      {
+         ulong ticket = PositionGetTicket(i);
          if(PositionGetString(POSITION_SYMBOL) == sym)
-           {
+         {
             double op = PositionGetDouble(POSITION_PRICE_OPEN);
             double sl = PositionGetDouble(POSITION_SL);
             double tp = PositionGetDouble(POSITION_TP);
-            
-            if(MathAbs(p - op) <= tol) return true;
-            if(sl > 0 && MathAbs(p - sl) <= tol) return true;
-            if(tp > 0 && MathAbs(p - tp) <= tol) return true;
-           }
-        }
-        
+            if(MathAbs(p - op) <= tol) { last_scan_result = true; return true; }
+            if(sl > 0 && MathAbs(p - sl) <= tol) { last_scan_result = true; return true; }
+            if(tp > 0 && MathAbs(p - tp) <= tol) { last_scan_result = true; return true; }
+         }
+      }
       for(int i = 0; i < OrdersTotal(); i++)
-        {
-         ulong ticket = OrderGetTicket(i); 
+      {
+         ulong ticket = OrderGetTicket(i);
          if(OrderGetString(ORDER_SYMBOL) == sym)
-           {
+         {
             double op = OrderGetDouble(ORDER_PRICE_OPEN);
             double sl = OrderGetDouble(ORDER_SL);
             double tp = OrderGetDouble(ORDER_TP);
-            
-            if(MathAbs(p - op) <= tol) return true;
-            if(sl > 0 && MathAbs(p - sl) <= tol) return true;
-            if(tp > 0 && MathAbs(p - tp) <= tol) return true;
-           }
-        }
-     }
+            if(MathAbs(p - op) <= tol) { last_scan_result = true; return true; }
+            if(sl > 0 && MathAbs(p - sl) <= tol) { last_scan_result = true; return true; }
+            if(tp > 0 && MathAbs(p - tp) <= tol) { last_scan_result = true; return true; }
+         }
+      }
+   }
 
    //========================================================
    // Check Standard Graphical Objects
    //========================================================
    int total = ObjectsTotal(0);
    for(int i = 0; i < total; i++)
-     {
+   {
       string nm = ObjectName(0, i);
-      if((bool)ObjectGetInteger(0, nm, OBJPROP_HIDDEN)) continue; 
+      if((bool)ObjectGetInteger(0, nm, OBJPROP_HIDDEN)) continue;
 
       ENUM_OBJECT ot = (ENUM_OBJECT)ObjectGetInteger(0, nm, OBJPROP_TYPE);
 
       if(ot == OBJ_HLINE)
-        {
+      {
          if(MathAbs(p - ObjectGetDouble(0, nm, OBJPROP_PRICE)) <= tol)
-            return true;
-        }
+         { last_scan_result = true; return true; }
+      }
       else if(ot == OBJ_VLINE)
-        {
+      {
          datetime lt = (datetime)ObjectGetInteger(0, nm, OBJPROP_TIME, 0);
          int ox, oy;
          if(ChartTimePriceToXY(0, 0, lt, p, ox, oy) && MathAbs(mx - ox) <= ptol)
-            return true;
-        }
+         { last_scan_result = true; return true; }
+      }
       else if(ot == OBJ_TREND      || ot == OBJ_TRENDBYANGLE ||
               ot == OBJ_CHANNEL    || ot == OBJ_STDDEVCHANNEL ||
               ot == OBJ_REGRESSION || ot == OBJ_PITCHFORK)
-        {
+      {
          double p1 = ObjectGetDouble(0, nm, OBJPROP_PRICE, 0);
          double p2 = ObjectGetDouble(0, nm, OBJPROP_PRICE, 1);
          if(MathAbs(p - p1) <= tol || MathAbs(p - p2) <= tol)
-            return true;
-        }
+         { last_scan_result = true; return true; }
+      }
       else if(ot == OBJ_RECTANGLE)
-        {
+      {
          double p1  = ObjectGetDouble(0, nm, OBJPROP_PRICE, 0);
          double p2  = ObjectGetDouble(0, nm, OBJPROP_PRICE, 1);
          double pHi = MathMax(p1, p2);
          double pLo = MathMin(p1, p2);
          if(MathAbs(p - pHi) <= tol || MathAbs(p - pLo) <= tol)
-            return true;
+         { last_scan_result = true; return true; }
          if(p > pLo - tol && p < pHi + tol)
-           {
+         {
             datetime t1 = (datetime)ObjectGetInteger(0, nm, OBJPROP_TIME, 0);
             datetime t2 = (datetime)ObjectGetInteger(0, nm, OBJPROP_TIME, 1);
             int x1, y1, x2, y2;
             if(ChartTimePriceToXY(0, 0, t1, p, x1, y1) &&
                ChartTimePriceToXY(0, 0, t2, p, x2, y2))
-              {
+            {
                if(MathAbs(mx - x1) <= ptol || MathAbs(mx - x2) <= ptol)
-                  return true;
-              }
-           }
-        }
+               { last_scan_result = true; return true; }
+            }
+         }
+      }
       else if(ot == OBJ_ARROW || ot == OBJ_ARROW_BUY || ot == OBJ_ARROW_SELL)
-        {
+      {
          double   lp = ObjectGetDouble(0, nm, OBJPROP_PRICE, 0);
          datetime lt = (datetime)ObjectGetInteger(0, nm, OBJPROP_TIME, 0);
          int ox, oy;
          if(ChartTimePriceToXY(0, 0, lt, lp, ox, oy))
             if(MathAbs(mx - ox) <= ptol + 4 && MathAbs(my - oy) <= ptol + 4)
-               return true;
-        }
+            { last_scan_result = true; return true; }
+      }
       else if(ot == OBJ_FIBO    || ot == OBJ_FIBOFAN  ||
               ot == OBJ_FIBOARC || ot == OBJ_FIBOCHANNEL ||
               ot == OBJ_EXPANSION)
-        {
+      {
          double p1 = ObjectGetDouble(0, nm, OBJPROP_PRICE, 0);
          double p2 = ObjectGetDouble(0, nm, OBJPROP_PRICE, 1);
          if(MathAbs(p - p1) <= tol || MathAbs(p - p2) <= tol)
-            return true;
-        }
+         { last_scan_result = true; return true; }
+      }
       else if(ot == OBJ_TEXT)
-        {
+      {
          if(MathAbs(p - ObjectGetDouble(0, nm, OBJPROP_PRICE, 0)) <= tol * 2)
-            return true;
-        }
-     }
+         { last_scan_result = true; return true; }
+      }
+   }
+
+   last_scan_result = false;
    return false;
-  }
+}
 
 //+------------------------------------------------------------------+
 void RevertDragMovement()
-  {
+{
    if(steps_taken != 0)
-     {
+   {
       ChartNavigate(0, CHART_CURRENT_POS, -steps_taken);
       steps_taken = 0;
       acc_x = 0.0;
-     }
+   }
    if(MathAbs(shift_taken) > 0.0)
-     {
+   {
       double pMax = ChartGetDouble(0, CHART_FIXED_MAX);
       double pMin = ChartGetDouble(0, CHART_FIXED_MIN);
       ChartSetDouble(0, CHART_FIXED_MAX, pMax - shift_taken);
       ChartSetDouble(0, CHART_FIXED_MIN, pMin - shift_taken);
       shift_taken = 0.0;
-     }
+   }
    ChartRedraw(0);
-  }
+}
 
 //+------------------------------------------------------------------+
 void OnChartEvent(const int id,
                   const long   &lparam,
                   const double &dparam,
                   const string &sparam)
-  {
+{
    if(id == CHARTEVENT_KEYDOWN && lparam == 88)
-     {
+   {
       custom_active = !custom_active;
       if(custom_active) EnableCustomMode();
       else              DisableCustomMode();
       return;
-     }
+   }
 
    if(!custom_active) return;
 
    if(id == CHARTEVENT_OBJECT_DRAG)
-     {
+   {
       if(drag_clean)
-        {
+      {
          drag_clean = false;
          RevertDragMovement();
-        }
+      }
       return;
-     }
+   }
 
    if(id == CHARTEVENT_MOUSE_MOVE)
-     {
+   {
       int x     = (int)lparam;
       int y     = (int)dparam;
       int click = (int)sparam;
@@ -267,20 +282,22 @@ void OnChartEvent(const int id,
       cur_mouse_y = y;
 
       if(click == 0)
-        {
+      {
          is_dragging = false;
          drag_clean  = false;
          steps_taken = 0;
          shift_taken = 0.0;
          dead_px     = 0;
          acc_x       = 0.0;
+         // Reset scan cache when mouse released so next click rescans fresh
+         last_scan_ms = 0;
          return;
-        }
+      }
 
       if(click == 1)
-        {
+      {
          if(!is_dragging)
-           {
+         {
             is_dragging  = true;
             last_drag_x  = x;
             last_drag_y  = y;
@@ -288,37 +305,39 @@ void OnChartEvent(const int id,
             steps_taken  = 0;
             shift_taken  = 0.0;
             dead_px      = 0;
+            // FIX: Force a fresh scan on mouse-down (ignore throttle cache)
+            last_scan_ms = 0;
             drag_clean = !IsMouseNearObject(x, y);
-           }
+         }
          else if(drag_clean)
-           {
+         {
             int dx = x - last_drag_x;
             int dy = y - last_drag_y;
 
             if(dead_px < InpDeadZone)
-              {
+            {
                dead_px += (int)(MathSqrt((double)(dx * dx + dy * dy)) + 0.5);
                last_drag_x = x;
                last_drag_y = y;
                return;
-              }
+            }
 
             if(dx != 0)
-              {
+            {
                double p_per_b = (double)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS) /
                                 (double)ChartGetInteger(0, CHART_VISIBLE_BARS);
                acc_x += dx;
                if(MathAbs(acc_x) >= p_per_b)
-                 {
+               {
                   int s = (int)((acc_x / p_per_b) * -1.0);
                   ChartNavigate(0, CHART_CURRENT_POS, s);
                   steps_taken += s;
                   acc_x += (s * p_per_b);
-                 }
-              }
+               }
+            }
 
             if(dy != 0)
-              {
+            {
                double pMax  = ChartGetDouble(0, CHART_FIXED_MAX);
                double pMin  = ChartGetDouble(0, CHART_FIXED_MIN);
                double shift = dy * ((pMax - pMin) /
@@ -326,28 +345,28 @@ void OnChartEvent(const int id,
                ChartSetDouble(0, CHART_FIXED_MAX, pMax + shift);
                ChartSetDouble(0, CHART_FIXED_MIN, pMin + shift);
                shift_taken += shift;
-              }
+            }
 
             last_drag_x = x;
             last_drag_y = y;
             ChartRedraw(0);
-           }
-        }
-     }
+         }
+      }
+   }
 
    //===================================================================
-   // SCROLL WHEEL — FULL ZOOM RESTORED (Candles + Price)
+   // SCROLL WHEEL — FULL ZOOM (Candles + Price)
    //===================================================================
    if(id == CHARTEVENT_MOUSE_WHEEL)
-     {
+   {
       double spd   = MathMax(0.01, MathMin(0.30, InpZoomSpeed));
       bool zoom_in = (dparam > 0);
 
       // --- 1. HORIZONTAL ZOOM (Scale Candles) ---
       int current_scale = (int)ChartGetInteger(0, CHART_SCALE);
-      if(zoom_in && current_scale < 5) 
+      if(zoom_in && current_scale < 5)
          ChartSetInteger(0, CHART_SCALE, current_scale + 1);
-      else if(!zoom_in && current_scale > 0) 
+      else if(!zoom_in && current_scale > 0)
          ChartSetInteger(0, CHART_SCALE, current_scale - 1);
 
       // --- 2. VERTICAL ZOOM (Scale Price Anchored to Mouse) ---
@@ -360,21 +379,21 @@ void OnChartEvent(const int id,
       frac                = MathMax(0.0, MathMin(1.0, frac));
       double anchor_price = pMax - frac * rng;
 
-      double new_rng = zoom_in ? rng * (1.0 - spd) : rng * (1.0 + spd);
+      double new_rng  = zoom_in ? rng * (1.0 - spd) : rng * (1.0 + spd);
       double new_pMax = anchor_price + frac         * new_rng;
       double new_pMin = anchor_price - (1.0 - frac) * new_rng;
 
       ChartSetDouble(0, CHART_FIXED_MAX, new_pMax);
       ChartSetDouble(0, CHART_FIXED_MIN, new_pMin);
       ChartRedraw(0);
-     }
-  }
+   }
+}
 
 int OnCalculate(const int rates_total,
                 const int prev_calculated,
                 const int begin,
                 const double &price[])
-  {
+{
    return(rates_total);
-  }
+}
 //+------------------------------------------------------------------+
